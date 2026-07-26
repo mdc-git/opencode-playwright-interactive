@@ -1,0 +1,17 @@
+{
+  "name": "showcase-opencode-js-repl",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test js-repl/manager.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.5",
+    "meriyah": "7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
