@@ -1,6 +1,6 @@
 # OpenCode JavaScript REPL
 
-A copyable OpenCode payload containing a persistent JavaScript REPL tool and the Playwright interactive QA skill.
+Persistent, interactive browser and Electron QA for OpenCode, powered by a JavaScript REPL and Playwright.
 
 ## Install
 
