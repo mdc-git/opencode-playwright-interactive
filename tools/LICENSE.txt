@@ -1,0 +1,5 @@
+Apache-2.0 applies to the Codex-derived portions of this tool.
+The complete license text is available at https://www.apache.org/licenses/LICENSE-2.0.
+
+The shared-cache Meriyah parser is licensed under the ISC License:
+https://github.com/meriyah/meriyah/blob/v7.0.0/LICENSE.md

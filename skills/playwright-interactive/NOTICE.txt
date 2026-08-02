@@ -11,8 +11,8 @@ See LICENSE.txt in this directory.
 
 Modifications:
 - Reworked Codex-specific configuration, sandbox, terminal, and tool guidance
-  for a project-local OpenCode skill.
-- Replaced `codex.emitImage(...)` with the local js_repl plugin's
+  for a native OpenCode skill.
+- Replaced `codex.emitImage(...)` with the native js_repl tool's
   `opencode.emitImage(...)` attachment API.
 - Adapted setup, permissions, lifecycle, and failure guidance to OpenCode.
 - Omitted Codex-only agent metadata and icon assets that OpenCode does not use.
