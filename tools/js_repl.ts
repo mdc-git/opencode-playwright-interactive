@@ -6,7 +6,6 @@ import { createInterface, type Interface as ReadLineInterface } from "node:readl
 import { delimiter, join } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import { promisify } from "node:util"
-import { gunzipSync } from "node:zlib"
 import { tool } from "@opencode-ai/plugin"
 
 const execFileAsync = promisify(execFile)
@@ -20,8 +19,797 @@ const PLAYWRIGHT_VERSION = "1.62.0"
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
 const controllers = new Map<string, ReplController>()
 
-// Replaced during the release-layout generation step with gzip(base64(JSON({ kernel, meriyah }))).
-const BUNDLED_RUNTIME = "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"
+// The persistent Node kernel is kept inline so this tool is self-contained.
+const KERNEL_SOURCE = `// Adapted from OpenAI Codex's js_repl kernel at revision 219c65d.
+// Licensed under Apache-2.0. See LICENSE and NOTICE at the project root.
+
+const { Buffer } = require("node:buffer");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const { builtinModules, createRequire } = require("node:module");
+const { performance } = require("node:perf_hooks");
+const path = require("node:path");
+const { URL, URLSearchParams, fileURLToPath, pathToFileURL } = require("node:url");
+const { inspect, TextDecoder, TextEncoder } = require("node:util");
+const vm = require("node:vm");
+
+const { SourceTextModule, SyntheticModule } = vm;
+const meriyahRequire = createRequire(process.env.OPENCODE_JS_REPL_MERIYAH_RESOLUTION_PATH ?? __filename);
+const meriyahPromise = Promise.resolve(meriyahRequire("meriyah")).then((module) => module.default ?? module);
+const MAX_OUTPUT_BYTES = 1024 * 1024;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGES_PER_EXEC = 4;
+const MAX_TOTAL_IMAGE_BYTES = MAX_IMAGE_BYTES * MAX_IMAGES_PER_EXEC;
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+
+const context = vm.createContext({});
+context.globalThis = context;
+context.global = context;
+context.Buffer = Buffer;
+context.console = console;
+context.URL = URL;
+context.URLSearchParams = URLSearchParams;
+context.TextEncoder = TextEncoder;
+context.TextDecoder = TextDecoder;
+context.AbortController = AbortController;
+context.AbortSignal = AbortSignal;
+context.structuredClone = structuredClone;
+context.fetch = fetch;
+context.Headers = Headers;
+context.Request = Request;
+context.Response = Response;
+context.performance = performance;
+context.crypto = crypto.webcrypto ?? crypto;
+context.setTimeout = setTimeout;
+context.clearTimeout = clearTimeout;
+context.setInterval = setInterval;
+context.clearInterval = clearInterval;
+context.queueMicrotask = queueMicrotask;
+context.setImmediate = setImmediate;
+context.clearImmediate = clearImmediate;
+context.atob = (data) => Buffer.from(data, "base64").toString("binary");
+context.btoa = (data) => Buffer.from(data, "binary").toString("base64");
+
+let previousModule = null;
+let previousBindings = [];
+let cellCounter = 0;
+let internalBindingCounter = 0;
+let activeExecId = null;
+let activeExecState = null;
+let fatalExitScheduled = false;
+
+const internalBindingSalt = (() => {
+  const raw = process.env.OPENCODE_JS_REPL_SESSION_ID ?? "";
+  return raw.replace(/[^A-Za-z0-9_$]/g, "_") || "session";
+})();
+
+const cwd = process.cwd();
+const tmpDir = process.env.OPENCODE_JS_REPL_TMP_DIR || cwd;
+const homeDir = process.env.HOME ?? null;
+
+function normalizeImageMimeType(value) {
+  const mime = typeof value === "string" ? value.toLowerCase() : "";
+  if (!SUPPORTED_IMAGE_MIME_TYPES.has(mime)) {
+    throw new Error("opencode.emitImage supports PNG, JPEG, WebP, and GIF images only");
+  }
+  return mime;
+}
+
+function imageExtension(mime) {
+  if (mime === "image/jpeg") return "jpg";
+  return mime.slice("image/".length);
+}
+
+function normalizeImageFilename(value, mime) {
+  if (value == null) return undefined;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("opencode.emitImage filename must be a non-empty string");
+  }
+  const base = path.basename(value.trim()).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 255);
+  return base || \`js-repl-image.\${imageExtension(mime)}\`;
+}
+
+function byteView(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (value instanceof ArrayBuffer || Object.prototype.toString.call(value) === "[object ArrayBuffer]") {
+    return Buffer.from(value);
+  }
+  return null;
+}
+
+function decodedBase64Size(value) {
+  const compact = value.replace(/\\s/g, "");
+  if (!compact || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) {
+    throw new Error("opencode.emitImage expected valid base64 image data");
+  }
+  const padding = compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((compact.length * 3) / 4) - padding);
+}
+
+function normalizeImage(value) {
+  if (typeof value === "string") {
+    const match = value.match(/^data:([^;,]+);base64,([\\s\\S]+)$/i);
+    if (!match) throw new Error("opencode.emitImage expected a base64 image data URL");
+    const mime = normalizeImageMimeType(match[1]);
+    const bytes = decodedBase64Size(match[2]);
+    if (bytes === 0) throw new Error("opencode.emitImage expected non-empty image data");
+    if (bytes > MAX_IMAGE_BYTES) {
+      throw new Error(\`opencode.emitImage image exceeds the \${MAX_IMAGE_BYTES}-byte limit\`);
+    }
+    return { type: "file", mime, url: value, bytes };
+  }
+
+  if (!value || typeof value !== "object" || !("bytes" in value)) {
+    throw new Error("opencode.emitImage expected a data URL or { bytes, mimeType, filename? }");
+  }
+  const bytes = byteView(value.bytes);
+  if (!bytes) {
+    throw new Error("opencode.emitImage bytes must be a Buffer, Uint8Array, ArrayBuffer, or array-buffer view");
+  }
+  if (bytes.byteLength === 0) throw new Error("opencode.emitImage expected non-empty image bytes");
+  if (bytes.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error(\`opencode.emitImage image exceeds the \${MAX_IMAGE_BYTES}-byte limit\`);
+  }
+  const mime = normalizeImageMimeType(value.mimeType);
+  return {
+    type: "file",
+    mime,
+    url: \`data:\${mime};base64,\${bytes.toString("base64")}\`,
+    filename: normalizeImageFilename(value.filename, mime),
+    bytes: bytes.byteLength,
+  };
+}
+
+function emitImage(imageLike) {
+  const state = activeExecState;
+  if (!state) return Promise.reject(new Error("opencode.emitImage requires an active js_repl execution"));
+  const observation = { observed: false };
+  const operation = (async () => {
+    const image = normalizeImage(await imageLike);
+    if (state.attachments.length >= MAX_IMAGES_PER_EXEC) {
+      throw new Error(\`opencode.emitImage supports at most \${MAX_IMAGES_PER_EXEC} images per execution\`);
+    }
+    if (state.attachmentBytes + image.bytes > MAX_TOTAL_IMAGE_BYTES) {
+      throw new Error(\`opencode.emitImage images exceed the \${MAX_TOTAL_IMAGE_BYTES}-byte execution limit\`);
+    }
+    state.attachmentBytes += image.bytes;
+    const { bytes: _bytes, ...attachment } = image;
+    state.attachments.push(attachment);
+  })();
+  state.pendingImages.push(
+    operation.then(
+      () => ({ ok: true, observation }),
+      (error) => ({ ok: false, error, observation }),
+    ),
+  );
+  return {
+    then(onFulfilled, onRejected) {
+      observation.observed = true;
+      return operation.then(onFulfilled, onRejected);
+    },
+    catch(onRejected) {
+      observation.observed = true;
+      return operation.catch(onRejected);
+    },
+    finally(onFinally) {
+      observation.observed = true;
+      return operation.finally(onFinally);
+    },
+  };
+}
+
+context.opencode = Object.freeze({ cwd, homeDir, tmpDir, emitImage });
+context.tmpDir = tmpDir;
+
+const builtinModuleSet = new Set([
+  ...builtinModules,
+  ...builtinModules.map((name) => \`node:\${name}\`),
+]);
+const deniedBuiltinModules = new Set([
+  "process",
+  "node:process",
+  "child_process",
+  "node:child_process",
+  "worker_threads",
+  "node:worker_threads",
+]);
+const moduleSearchBases = (() => {
+  const bases = [];
+  const seen = new Set();
+  const configured = process.env.OPENCODE_JS_REPL_NODE_MODULE_DIRS ?? "";
+  for (const entry of configured.split(path.delimiter)) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const resolved = path.isAbsolute(trimmed) ? trimmed : path.resolve(cwd, trimmed);
+    const base = path.basename(resolved) === "node_modules" ? path.dirname(resolved) : resolved;
+    if (!seen.has(base)) {
+      seen.add(base);
+      bases.push(base);
+    }
+  }
+  if (!seen.has(cwd)) bases.push(cwd);
+  return bases;
+})();
+
+const requireByBase = new Map();
+const linkedFileModules = new Map();
+const linkedNativeModules = new Map();
+const linkedModuleEvaluations = new Map();
+
+function clearLocalFileModuleCaches() {
+  linkedFileModules.clear();
+  linkedModuleEvaluations.clear();
+}
+
+function canonicalizePath(value) {
+  try {
+    return fs.realpathSync.native(value);
+  } catch {
+    return value;
+  }
+}
+
+function getRequireForBase(base) {
+  let req = requireByBase.get(base);
+  if (!req) {
+    req = createRequire(path.join(base, "__opencode_js_repl__.cjs"));
+    requireByBase.set(base, req);
+  }
+  return req;
+}
+
+function isWithinBaseNodeModules(base, resolvedPath) {
+  const root = path.resolve(canonicalizePath(base), "node_modules");
+  const relative = path.relative(root, canonicalizePath(resolvedPath));
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isFileUrlSpecifier(specifier) {
+  if (typeof specifier !== "string" || !specifier.startsWith("file:")) return false;
+  try {
+    return new URL(specifier).protocol === "file:";
+  } catch {
+    return false;
+  }
+}
+
+function isPathSpecifier(specifier) {
+  if (typeof specifier !== "string" || !specifier || specifier.trim() !== specifier) return false;
+  return (
+    specifier.startsWith("./") ||
+    specifier.startsWith("../") ||
+    specifier.startsWith(".\\\\") ||
+    specifier.startsWith("..\\\\") ||
+    path.isAbsolute(specifier) ||
+    isFileUrlSpecifier(specifier)
+  );
+}
+
+function isBarePackageSpecifier(specifier) {
+  return (
+    typeof specifier === "string" &&
+    Boolean(specifier) &&
+    specifier.trim() === specifier &&
+    !specifier.startsWith(".") &&
+    !specifier.startsWith("/") &&
+    !specifier.startsWith("\\\\") &&
+    !path.isAbsolute(specifier) &&
+    !/^[a-zA-Z][a-zA-Z\\d+.-]*:/.test(specifier) &&
+    !specifier.includes("\\\\")
+  );
+}
+
+function resolvePathSpecifier(specifier, referrerIdentifier = null) {
+  let candidate;
+  try {
+    candidate = isFileUrlSpecifier(specifier)
+      ? fileURLToPath(new URL(specifier))
+      : path.isAbsolute(specifier)
+        ? specifier
+        : path.resolve(referrerIdentifier ? path.dirname(referrerIdentifier) : cwd, specifier);
+  } catch (error) {
+    throw new Error(\`Failed to resolve module "\${specifier}": \${error.message}\`);
+  }
+
+  let resolvedPath;
+  try {
+    resolvedPath = fs.realpathSync.native(candidate);
+  } catch (error) {
+    if (error?.code === "ENOENT") throw new Error(\`Module not found: \${specifier}\`);
+    throw error;
+  }
+  if (!fs.statSync(resolvedPath).isFile()) {
+    throw new Error(\`Directory imports are not supported: \${specifier}\`);
+  }
+  const extension = path.extname(resolvedPath).toLowerCase();
+  if (extension !== ".js" && extension !== ".mjs") {
+    throw new Error(\`Only local .js and .mjs modules are supported: \${specifier}\`);
+  }
+  return { kind: "file", path: resolvedPath };
+}
+
+function resolveBareSpecifier(specifier) {
+  let firstError = null;
+  for (const base of moduleSearchBases) {
+    try {
+      const resolved = getRequireForBase(base).resolve(specifier, {
+        conditions: new Set(["node", "import"]),
+      });
+      if (isWithinBaseNodeModules(base, resolved)) return resolved;
+    } catch (error) {
+      if (error?.code !== "MODULE_NOT_FOUND" && error?.code !== "ERR_MODULE_NOT_FOUND") {
+        firstError ??= error;
+      }
+    }
+  }
+  if (firstError) throw firstError;
+  return null;
+}
+
+function resolveSpecifier(specifier, referrerIdentifier = null) {
+  if (specifier.startsWith("node:") || builtinModuleSet.has(specifier)) {
+    const normalized = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
+    if (deniedBuiltinModules.has(specifier) || deniedBuiltinModules.has(normalized)) {
+      throw new Error(\`Importing module "\${specifier}" is not allowed in js_repl\`);
+    }
+    return { kind: "builtin", specifier: \`node:\${normalized}\` };
+  }
+  if (isPathSpecifier(specifier)) return resolvePathSpecifier(specifier, referrerIdentifier);
+  if (!isBarePackageSpecifier(specifier)) {
+    throw new Error(\`Unsupported import specifier "\${specifier}"\`);
+  }
+  const resolved = resolveBareSpecifier(specifier);
+  if (!resolved) throw new Error(\`Module not found: \${specifier}\`);
+  return { kind: "package", path: resolved, specifier };
+}
+
+function resolvedToUrl(resolved) {
+  if (resolved.kind === "builtin") return resolved.specifier;
+  if (resolved.kind === "file") return pathToFileURL(resolved.path).href;
+  if (resolved.kind === "package") return resolved.specifier;
+  throw new Error(\`Unsupported module resolution kind: \${resolved.kind}\`);
+}
+
+function setImportMeta(meta, module, isMain = false) {
+  meta.url = pathToFileURL(module.identifier).href;
+  meta.filename = module.identifier;
+  meta.dirname = path.dirname(module.identifier);
+  meta.main = isMain;
+  meta.resolve = (specifier) => resolvedToUrl(resolveSpecifier(specifier, module.identifier));
+}
+
+async function loadLinkedNativeModule(resolved) {
+  const key = resolved.kind === "builtin" ? resolved.specifier : resolved.path;
+  let promise = linkedNativeModules.get(key);
+  if (!promise) {
+    promise = (async () => {
+      const namespace = await import(
+        resolved.kind === "builtin" ? resolved.specifier : pathToFileURL(resolved.path).href
+      );
+      const names = Object.getOwnPropertyNames(namespace);
+      return new SyntheticModule(
+        names,
+        function initialize() {
+          for (const name of names) this.setExport(name, namespace[name]);
+        },
+        { context },
+      );
+    })();
+    linkedNativeModules.set(key, promise);
+  }
+  return promise;
+}
+
+async function loadLinkedFileModule(modulePath) {
+  let module = linkedFileModules.get(modulePath);
+  if (!module) {
+    module = new SourceTextModule(fs.readFileSync(modulePath, "utf8"), {
+      context,
+      identifier: modulePath,
+      initializeImportMeta(meta, current) {
+        setImportMeta(meta, current, false);
+      },
+      importModuleDynamically(specifier, referrer) {
+        return importResolved(resolveSpecifier(specifier, referrer?.identifier));
+      },
+    });
+    linkedFileModules.set(modulePath, module);
+  }
+  if (module.status === "unlinked") {
+    await module.link(async (specifier, referrer) => {
+      const resolved = resolveSpecifier(specifier, referrer?.identifier);
+      if (resolved.kind !== "file") {
+        throw new Error(
+          \`Static import "\${specifier}" is not supported from local files; use await import(...)\`,
+        );
+      }
+      return loadLinkedFileModule(resolved.path);
+    });
+  }
+  return module;
+}
+
+async function importResolved(resolved) {
+  if (resolved.kind !== "file") {
+    return import(resolved.kind === "builtin" ? resolved.specifier : pathToFileURL(resolved.path).href);
+  }
+  const module = await loadLinkedFileModule(resolved.path);
+  let evaluation = linkedModuleEvaluations.get(resolved.path);
+  if (!evaluation) {
+    evaluation = module.evaluate();
+    linkedModuleEvaluations.set(resolved.path, evaluation);
+  }
+  await evaluation;
+  return module.namespace;
+}
+
+function collectPatternNames(pattern, kind, map) {
+  if (!pattern) return;
+  if (pattern.type === "Identifier") {
+    if (!map.has(pattern.name)) map.set(pattern.name, kind);
+    return;
+  }
+  if (pattern.type === "ObjectPattern") {
+    for (const property of pattern.properties ?? []) {
+      collectPatternNames(property.type === "Property" ? property.value : property.argument, kind, map);
+    }
+    return;
+  }
+  if (pattern.type === "ArrayPattern") {
+    for (const element of pattern.elements ?? []) {
+      if (element) collectPatternNames(element.type === "RestElement" ? element.argument : element, kind, map);
+    }
+    return;
+  }
+  if (pattern.type === "AssignmentPattern") collectPatternNames(pattern.left, kind, map);
+  if (pattern.type === "RestElement") collectPatternNames(pattern.argument, kind, map);
+}
+
+function collectBindings(ast) {
+  const bindings = new Map();
+  for (const statement of ast.body ?? []) {
+    if (statement.type === "VariableDeclaration") {
+      for (const declaration of statement.declarations) {
+        collectPatternNames(declaration.id, statement.kind, bindings);
+      }
+    } else if (statement.type === "FunctionDeclaration" && statement.id) {
+      bindings.set(statement.id.name, "function");
+    } else if (statement.type === "ClassDeclaration" && statement.id) {
+      bindings.set(statement.id.name, "class");
+    } else if (statement.type === "ForStatement" && statement.init?.type === "VariableDeclaration") {
+      if (statement.init.kind === "var") {
+        for (const declaration of statement.init.declarations) {
+          collectPatternNames(declaration.id, "var", bindings);
+        }
+      }
+    } else if (
+      (statement.type === "ForInStatement" || statement.type === "ForOfStatement") &&
+      statement.left?.type === "VariableDeclaration" &&
+      statement.left.kind === "var"
+    ) {
+      for (const declaration of statement.left.declarations) {
+        collectPatternNames(declaration.id, "var", bindings);
+      }
+    }
+  }
+  return Array.from(bindings, ([name, kind]) => ({ name, kind }));
+}
+
+function collectPatternBindingNames(pattern) {
+  const names = new Map();
+  collectPatternNames(pattern, "binding", names);
+  return Array.from(names.keys());
+}
+
+function nextInternalBindingName() {
+  return \`__opencode_internal_commit_\${internalBindingSalt}_\${internalBindingCounter++}\`;
+}
+
+function markExpression(names, marker) {
+  return \`(\${marker}(\${names.map((name) => JSON.stringify(name)).join(", ")}), undefined)\`;
+}
+
+function instrumentVariableDeclaration(code, declaration, marker) {
+  if (!declaration.declarations?.length) return code.slice(declaration.start, declaration.end);
+  const first = declaration.declarations[0];
+  const last = declaration.declarations[declaration.declarations.length - 1];
+  const parts = [];
+  for (const item of declaration.declarations) {
+    parts.push(code.slice(item.start, item.end));
+    const names = collectPatternBindingNames(item.id);
+    if (names.length) parts.push(\`\${nextInternalBindingName()} = \${markExpression(names, marker)}\`);
+  }
+  return \`\${code.slice(declaration.start, first.start)}\${parts.join(", ")}\${code.slice(last.end, declaration.end)}\`;
+}
+
+function applyReplacements(code, replacements) {
+  let output = code;
+  for (const replacement of replacements.sort((a, b) => b.start - a.start)) {
+    output = output.slice(0, replacement.start) + replacement.text + output.slice(replacement.end);
+  }
+  return output;
+}
+
+function instrumentCurrentBindings(code, ast, marker) {
+  const replacements = [];
+  for (const statement of ast.body ?? []) {
+    if (statement.type === "VariableDeclaration") {
+      replacements.push({
+        start: statement.start,
+        end: statement.end,
+        text: instrumentVariableDeclaration(code, statement, marker),
+      });
+    } else if (statement.type === "FunctionDeclaration" && statement.id) {
+      replacements.push({
+        start: statement.start,
+        end: statement.end,
+        text: \`\${code.slice(statement.start, statement.end)}\\n;\${marker}(\${JSON.stringify(statement.id.name)});\`,
+      });
+    } else if (statement.type === "ClassDeclaration" && statement.id) {
+      replacements.push({
+        start: statement.start,
+        end: statement.end,
+        text: \`\${code.slice(statement.start, statement.end)}\\n;\${marker}(\${JSON.stringify(statement.id.name)});\`,
+      });
+    } else if (
+      statement.type === "ForStatement" &&
+      statement.init?.type === "VariableDeclaration" &&
+      statement.init.kind === "var"
+    ) {
+      replacements.push({
+        start: statement.init.start,
+        end: statement.init.end,
+        text: instrumentVariableDeclaration(code, statement.init, marker),
+      });
+    }
+  }
+  return applyReplacements(code, replacements);
+}
+
+async function buildModuleSource(code) {
+  const meriyah = await meriyahPromise;
+  const ast = meriyah.parseModule(code, {
+    next: true,
+    module: true,
+    ranges: true,
+    loc: false,
+    disableWebCompat: true,
+  });
+  const currentBindings = collectBindings(ast);
+  const priorBindings = previousModule ? previousBindings : [];
+  const markCommittedName = nextInternalBindingName();
+  const markPreludeName = nextInternalBindingName();
+  const instrumented = instrumentCurrentBindings(code, ast, markCommittedName);
+
+  let prelude = [
+    \`const \${markCommittedName} = import.meta.__opencodeMarkCommitted;\`,
+    \`const \${markPreludeName} = import.meta.__opencodeMarkPrelude;\`,
+    "delete import.meta.__opencodeMarkCommitted;",
+    "delete import.meta.__opencodeMarkPrelude;",
+  ].join("\\n");
+  prelude += "\\n";
+  if (previousModule && priorBindings.length) {
+    prelude += 'import * as __prev from "@prev";\\n';
+    prelude += priorBindings
+      .map((binding) => {
+        const keyword = binding.kind === "var" ? "var" : binding.kind === "const" ? "const" : "let";
+        return \`\${keyword} \${binding.name} = __prev.\${binding.name};\`;
+      })
+      .join("\\n");
+    prelude += "\\n";
+  }
+  prelude += \`\${markPreludeName}();\\n\`;
+
+  const merged = new Map(priorBindings.map((binding) => [binding.name, binding.kind]));
+  for (const binding of currentBindings) merged.set(binding.name, binding.kind);
+  const exportNames = Array.from(merged.keys());
+  const exports = exportNames.length ? \`\\nexport { \${exportNames.join(", ")} };\` : "";
+  return {
+    source: \`\${prelude}\${instrumented}\${exports}\`,
+    currentBindings,
+    priorBindings,
+    nextBindings: Array.from(merged, ([name, kind]) => ({ name, kind })),
+  };
+}
+
+function tryReadBinding(module, name) {
+  try {
+    module.namespace[name];
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function collectCommittedBindings(module, prior, current, explicitlyCommitted) {
+  const merged = new Map(prior.map((binding) => [binding.name, binding.kind]));
+  let currentCount = 0;
+  for (const binding of current) {
+    const readableLexical = !["var", "function"].includes(binding.kind) && tryReadBinding(module, binding.name);
+    if (explicitlyCommitted.has(binding.name) || readableLexical) {
+      merged.set(binding.name, binding.kind);
+      currentCount += 1;
+    }
+  }
+  return {
+    bindings: Array.from(merged, ([name, kind]) => ({ name, kind })),
+    currentCount,
+  };
+}
+
+function send(message) {
+  process.stdout.write(\`\${JSON.stringify(message)}\\n\`);
+}
+
+function formatError(error) {
+  return error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
+}
+
+function scheduleFatalExit(kind, error) {
+  if (fatalExitScheduled) return;
+  fatalExitScheduled = true;
+  const message = \`js_repl kernel \${kind}: \${formatError(error)}; kernel reset. Catch asynchronous errors to avoid kernel termination.\`;
+  if (activeExecId) {
+    try {
+      fs.writeSync(process.stdout.fd, \`\${JSON.stringify({
+        type: "exec_result",
+        id: activeExecId,
+        ok: false,
+        output: "",
+        error: message,
+      })}\\n\`);
+    } catch {}
+  }
+  try {
+    fs.writeSync(process.stderr.fd, \`\${message}\\n\`);
+  } catch {}
+  setImmediate(() => process.exit(1));
+}
+
+function formatLog(args) {
+  return args
+    .map((argument) =>
+      typeof argument === "string" ? argument : inspect(argument, { depth: 4, colors: false }),
+    )
+    .join(" ");
+}
+
+async function withCapturedConsole(fn) {
+  const logs = [];
+  let bytes = 0;
+  let truncated = false;
+  const capture = (...args) => {
+    if (truncated) return;
+    const line = formatLog(args);
+    const next = Buffer.byteLength(line) + (logs.length ? 1 : 0);
+    if (bytes + next > MAX_OUTPUT_BYTES) {
+      logs.push(\`[js_repl output truncated at \${MAX_OUTPUT_BYTES} bytes]\`);
+      truncated = true;
+      return;
+    }
+    logs.push(line);
+    bytes += next;
+  };
+  const original = context.console;
+  context.console = { ...console, log: capture, info: capture, warn: capture, error: capture, debug: capture };
+  try {
+    return await fn(logs);
+  } finally {
+    context.console = original;
+  }
+}
+
+async function handleExec(message) {
+  clearLocalFileModuleCaches();
+  activeExecId = message.id;
+  const execState = { attachments: [], attachmentBytes: 0, pendingImages: [] };
+  activeExecState = execState;
+  let module = null;
+  let currentBindings = [];
+  let priorBindings = previousBindings;
+  let nextBindings = [];
+  let linked = false;
+  let preludeCompleted = false;
+  const committed = new Set();
+
+  try {
+    const built = await buildModuleSource(typeof message.code === "string" ? message.code : "");
+    currentBindings = built.currentBindings;
+    priorBindings = built.priorBindings;
+    nextBindings = built.nextBindings;
+
+    const output = await withCapturedConsole(async (logs) => {
+      const identifier = path.join(cwd, \`.opencode_js_repl_cell_\${cellCounter++}.mjs\`);
+      module = new SourceTextModule(built.source, {
+        context,
+        identifier,
+        initializeImportMeta(meta, current) {
+          setImportMeta(meta, current, true);
+          meta.__opencodeMarkCommitted = (...names) => names.forEach((name) => committed.add(name));
+          meta.__opencodeMarkPrelude = () => {
+            preludeCompleted = true;
+          };
+        },
+        importModuleDynamically(specifier, referrer) {
+          return importResolved(resolveSpecifier(specifier, referrer?.identifier));
+        },
+      });
+      await module.link(async (specifier) => {
+        if (specifier === "@prev" && previousModule) {
+          const bindings = previousBindings;
+          const sourceModule = previousModule;
+          return new SyntheticModule(
+            bindings.map((binding) => binding.name),
+            function initializePrevious() {
+              for (const binding of bindings) this.setExport(binding.name, sourceModule.namespace[binding.name]);
+            },
+            { context },
+          );
+        }
+        throw new Error(\`Top-level static import "\${specifier}" is not supported; use await import(...)\`);
+      });
+      linked = true;
+      await module.evaluate();
+      if (execState.pendingImages.length) {
+        const imageResults = await Promise.all(execState.pendingImages);
+        const unhandled = imageResults.find((result) => !result.ok && !result.observation.observed);
+        if (unhandled) throw unhandled.error;
+      }
+      return logs.join("\\n");
+    });
+
+    previousModule = module;
+    previousBindings = nextBindings;
+    send({
+      type: "exec_result",
+      id: message.id,
+      ok: true,
+      output,
+      attachments: execState.attachments,
+      error: null,
+    });
+  } catch (error) {
+    const result = collectCommittedBindings(linked ? module : null, priorBindings, currentBindings, committed);
+    if (module && linked && (result.currentCount > 0 || (preludeCompleted && priorBindings.length > 0))) {
+      previousModule = module;
+      previousBindings = result.bindings;
+    }
+    send({ type: "exec_result", id: message.id, ok: false, output: "", error: formatError(error) });
+  } finally {
+    if (activeExecId === message.id) activeExecId = null;
+    if (activeExecState === execState) activeExecState = null;
+  }
+}
+
+let queue = Promise.resolve();
+let pending = "";
+
+process.on("uncaughtException", (error) => scheduleFatalExit("uncaught exception", error));
+process.on("unhandledRejection", (error) => scheduleFatalExit("unhandled rejection", error));
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  pending += chunk;
+  while (true) {
+    const newline = pending.indexOf("\\n");
+    if (newline < 0) break;
+    const line = pending.slice(0, newline);
+    pending = pending.slice(newline + 1);
+    if (!line.trim()) continue;
+    try {
+      const message = JSON.parse(line);
+      if (message.type === "exec") queue = queue.then(() => handleExec(message));
+    } catch {}
+  }
+});
+`
 
 type Attachment = { type: "file"; mime: string; url: string; filename?: string }
 type Result = { output: string; attachments: Attachment[] }
@@ -35,7 +823,6 @@ type Message = {
   error?: string | null
 }
 
-let bundledRuntime: { kernel: string } | undefined
 const checkedNodes = new Map<string, Promise<void>>()
 let cleanupRegistered = false
 
@@ -81,13 +868,8 @@ async function checkNode(path: string) {
   return check
 }
 
-function runtime() {
-  if (bundledRuntime) return bundledRuntime
-  if (BUNDLED_RUNTIME === "__OPENCODE_JS_REPL_BUNDLE__") {
-    throw new Error("js_repl tool bundle is incomplete")
-  }
-  bundledRuntime = JSON.parse(gunzipSync(Buffer.from(BUNDLED_RUNTIME, "base64")).toString("utf8"))
-  return bundledRuntime
+function kernel() {
+  return KERNEL_SOURCE
 }
 
 function playwrightCacheDirectory() {
@@ -95,7 +877,7 @@ function playwrightCacheDirectory() {
 }
 
 function replCacheDirectory() {
-  return process.env.OPENCODE_JS_REPL_CACHE_DIR ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "opencode", "js-repl")
+  return process.env.OPENCODE_JS_REPL_CACHE_DIR ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "opencode")
 }
 
 function playwrightBrowserDirectory() {
@@ -238,9 +1020,9 @@ class ReplController {
     await checkNode(node)
     await ensureMeriyah()
     this.scratch ??= await mkdtemp(join(tmpdir(), "opencode-js-repl-"))
-    const source = runtime()
+    const source = kernel()
     const kernelPath = join(this.scratch, "kernel.cjs")
-    await writeFile(kernelPath, source.kernel)
+    await writeFile(kernelPath, source)
     this.stderrTail = []
     this.stderrFragment = ""
     const moduleDirs = [
@@ -250,7 +1032,7 @@ class ReplController {
     ]
     const child = spawn(node, ["--no-warnings", "--experimental-vm-modules", kernelPath], {
       cwd: this.directory,
-      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), OPENCODE_JS_REPL_SESSION_ID: this.sessionID, OPENCODE_JS_REPL_TMP_DIR: this.scratch, PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), OPENCODE_JS_REPL_NODE_MODULE_DIRS: moduleDirs.join(delimiter) },
+      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), OPENCODE_JS_REPL_SESSION_ID: this.sessionID, OPENCODE_JS_REPL_TMP_DIR: this.scratch, OPENCODE_JS_REPL_MERIYAH_RESOLUTION_PATH: join(replCacheDirectory(), "__opencode_js_repl__.cjs"), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), OPENCODE_JS_REPL_NODE_MODULE_DIRS: moduleDirs.join(delimiter) },
       stdio: ["pipe", "pipe", "pipe"],
     })
     await new Promise<void>((resolve, reject) => {
