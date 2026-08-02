@@ -19,7 +19,7 @@ Copy both directories into an OpenCode project's `.opencode/` directory:
       NOTICE.txt
 ```
 
-No project package manifest or workspace install step is required. On first use, `js_repl` installs its pinned Meriyah parser in `~/.cache/opencode/js-repl`; later sessions reuse it. Fully quit and restart OpenCode after copying or changing a tool or skill.
+No project package manifest or workspace install step is required. On first use, `js_repl` installs its pinned Meriyah parser in `~/.cache/opencode`; later sessions reuse it. Fully quit and restart OpenCode after copying or changing a tool or skill.
 
 ## Requirements
 
