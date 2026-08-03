@@ -795,6 +795,8 @@ let pending = "";
 process.on("uncaughtException", (error) => scheduleFatalExit("uncaught exception", error));
 process.on("unhandledRejection", (error) => scheduleFatalExit("unhandled rejection", error));
 process.stdin.setEncoding("utf8");
+// The controller owns this pipe. Its closure means OpenCode has shut down.
+process.stdin.once("end", () => process.exit(0));
 process.stdin.on("data", (chunk) => {
   pending += chunk;
   while (true) {
@@ -1144,7 +1146,7 @@ async function removeController(sessionID: string) {
 }
 
 export default tool({
-  description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. Send plain JavaScript in code without markdown fences. Top-level bindings persist until js_repl_reset. Use dynamic imports such as await import('node:path') and attach images with await opencode.emitImage({ bytes, mimeType, filename? }). A timeout or cancellation resets the kernel and discards its state.",
+  description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. Send plain JavaScript in code without markdown fences. Top-level bindings persist until js_repl_reset. Use dynamic imports such as await import('node:path') and attach images with await opencode.emitImage({ bytes, mimeType, filename? }). A timeout or cancellation resets the kernel and discards its state. This tool is not an OS sandbox. It blocks direct process, child_process, and worker_threads imports.",
   args: {
     code: tool.schema.string().min(1).describe("Plain JavaScript source to execute. Do not wrap it in JSON or markdown fences."),
     timeout_ms: tool.schema.number().int().min(1).max(MAX_TIMEOUT_MS).optional().describe(`Execution timeout in milliseconds. Defaults to ${DEFAULT_TIMEOUT_MS}.`),

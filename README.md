@@ -2,6 +2,10 @@
 
 Persistent, interactive browser and Electron QA for OpenCode, powered by a JavaScript REPL and Playwright.
 
+<video controls src="./assets/opencode-playwright-product-video-final.mp4">
+  Your browser does not support HTML video. <a href="./assets/opencode-playwright-product-video-final.mp4">Download the demo video</a>.
+</video>
+
 ## Install
 
 Copy both directories into an OpenCode project's `.opencode/` directory:
@@ -51,7 +55,7 @@ Top-level `const`, `let`, `var`, function, and class bindings persist between ca
 
 The kernel exposes `opencode.cwd`, `opencode.homeDir`, `opencode.tmpDir`, `tmpDir`, and `opencode.emitImage(imageLike)`. Image attachments support PNG, JPEG, WebP, and GIF, with a 5 MiB limit per image and at most four images per execution.
 
-Call `js_repl_reset` after explicit browser cleanup. Timeouts, cancellation, fatal asynchronous errors, and process crashes also reset the kernel. Native custom tools do not receive the plugin session-deletion lifecycle hook, so reset explicitly when a long-lived session no longer needs the REPL.
+Call `js_repl_reset` after explicit browser cleanup. Timeouts, cancellation, fatal asynchronous errors, process crashes, and fully closing OpenCode also tear down the kernel. Native custom tools do not receive the plugin session-deletion lifecycle hook, so reset explicitly when a long-lived session no longer needs the REPL.
 
 ## Playwright Skill
 
