@@ -2,9 +2,11 @@
 
 Persistent, interactive browser and Electron QA for OpenCode, powered by a JavaScript REPL and Playwright.
 
-<video controls src="./assets/opencode-playwright-product-video-final.mp4">
-  Your browser does not support HTML video. <a href="./assets/opencode-playwright-product-video-final.mp4">Download the demo video</a>.
-</video>
+
+
+<video controls src="https://github.com/user-attachments/assets/b015fe51-692f-475b-a8ac-a772695db35e"></video>
+
+
 
 ## Install
 
