@@ -6,7 +6,11 @@ Persistent, interactive browser and Electron QA for OpenCode, powered by a JavaS
 
 <video controls src="https://github.com/user-attachments/assets/b015fe51-692f-475b-a8ac-a772695db35e"></video>
 
+## Advantages
 
+Compared with one-shot shell commands, ad hoc Node scripts, or a fresh browser launch for every check, `js_repl` keeps JavaScript bindings, imports, and browser objects alive for the current OpenCode session. This makes iterative debugging faster: inspect a page, change the application, query the same page again, and retain the variables and helpers built along the way.
+
+The Playwright skill turns that persistent runtime into an interactive QA loop for browser and Electron applications. It supports targeted inspection, repeatable interactions, screenshots, and follow-up assertions without adding Playwright dependencies or browser binaries to each application workspace. The shared, managed runtime also avoids setup drift between projects while leaving each REPL session isolated.
 
 ## Install
 
@@ -62,12 +66,6 @@ Call `js_repl_reset` after explicit browser cleanup. Timeouts, cancellation, fat
 ## Playwright Skill
 
 `skills/playwright-interactive/` provides persistent browser and Electron QA instructions. Before first use, call `js_repl_playwright_setup`; it installs Playwright 1.62.0 and Chromium under `~/.cache/opencode/playwright` by default, rather than modifying each application workspace. The REPL automatically resolves the shared library and browser path thereafter. Set `OPENCODE_PLAYWRIGHT_CACHE_DIR` to relocate the managed cache, `OPENCODE_PLAYWRIGHT_NPM_PATH` or `OPENCODE_PLAYWRIGHT_NPX_PATH` to select package executables, and `PLAYWRIGHT_BROWSERS_PATH` to reuse an existing browser cache.
-
-## Advantages
-
-Compared with one-shot shell commands, ad hoc Node scripts, or a fresh browser launch for every check, `js_repl` keeps JavaScript bindings, imports, and browser objects alive for the current OpenCode session. This makes iterative debugging faster: inspect a page, change the application, query the same page again, and retain the variables and helpers built along the way.
-
-The Playwright skill turns that persistent runtime into an interactive QA loop for browser and Electron applications. It supports targeted inspection, repeatable interactions, screenshots, and follow-up assertions without adding Playwright dependencies or browser binaries to each application workspace. The shared, managed runtime also avoids setup drift between projects while leaving each REPL session isolated.
 
 ## Configuration
 
