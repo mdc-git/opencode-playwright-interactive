@@ -42,7 +42,7 @@ No project package manifest or workspace install step is required. On first use,
 
 - `js_repl`: execute plain JavaScript in a persistent, session-isolated Node.js kernel.
 - `js_repl_reset`: clear the current session's bindings and terminate its kernel.
-- `js_repl_playwright_setup`: install the shared Playwright runtime and Chromium once for every local workspace.
+- `js_repl_playwright_setup`: install the shared Playwright runtime and Chromium once in the local user cache.
 
 `js_repl` accepts `code` and optional `timeout_ms` (1 to 300000 milliseconds; default 30000). Send JavaScript directly, without Markdown fences.
 
@@ -61,7 +61,7 @@ Top-level `const`, `let`, `var`, function, and class bindings persist between ca
 
 The kernel exposes `opencode.cwd`, `opencode.homeDir`, `opencode.tmpDir`, `tmpDir`, and `opencode.emitImage(imageLike)`. Image attachments support PNG, JPEG, WebP, and GIF, with a 5 MiB limit per image and at most four images per execution.
 
-Call `js_repl_reset` after explicit browser cleanup. Timeouts, cancellation, fatal asynchronous errors, process crashes, and fully closing OpenCode also tear down the kernel. Native custom tools do not receive the plugin session-deletion lifecycle hook, so reset explicitly when a long-lived session no longer needs the REPL.
+Explicitly close browser resources before resetting the REPL or ending a browser QA task. Use `js_repl_reset` when you need to discard the current session; timeouts, cancellation, fatal asynchronous errors, process crashes, and fully closing OpenCode also tear down the kernel. Native custom tools do not receive the plugin session-deletion lifecycle hook, so reset explicitly when a long-lived session no longer needs the REPL.
 
 ## Playwright Skill
 
