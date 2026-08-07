@@ -173,7 +173,16 @@ The agent **MUST** visually inspect the emitted image before choosing the next a
 
 ## Dynamic And Framed UI
 
-`page.getByRole()` and other page locators search the main frame, not every child frame. User-visible controls may live in same-origin or cross-origin frames, and those frames may attach after `domcontentloaded`. Absence from the main-frame DOM is not evidence that a visible control is absent from the browser UI.
+`page.getByRole()` and other bare `page.*` locators search the main frame only, never child frames or shadow roots. Because of this, **the first lookup for any visible control should go through the controller**, never a bare `page.getByRole(...)`. Cross-frame lookup is the default posture, not an opt-in:
+
+```js
+// preferred, frame- and shadow-root-aware:
+var t = await stealth.resolveVisible(page, (frame) => frame.getByRole("button", { name: "Continue" }));
+// avoid: bare main-document-only lookup
+await stealth.click(page, page.getByRole("button", { name: "Continue" }));
+```
+
+A control you can see on screen may live in a same-origin or cross-origin iframe, and child frames may attach asynchronously after `domcontentloaded`. Absence of an element from the main-frame DOM is **never** evidence that a visible control is absent from the browser UI. In particular, cookie/consent/data-protection banners are commonly hosted in a third-party iframe (a "CMP") precisely to keep them out of the main document.
 
 When the exact accessible name is already known, resolve it across current and newly attached frames through the controller:
 
@@ -232,17 +241,56 @@ console.log(targetDiagnostic);
 
 Because `locator.evaluate()` runs in the target's own realm, this single inspection already identifies its frame URL and document-versus-shadow-root context. The agent **MUST NOT** repeat the same failed managed action unchanged or enumerate unrelated frames and roots after this diagnostic. If an unrelated element owns the hit point, wait for or dismiss the blocking UI using managed input. If the target owns the hit point but the managed action still fails, report the controller defect with the diagnostic and screenshot instead of silently forcing the action.
 
-## Managed Input
+## Self-Removing Controls And Dismissals
 
-Use the session controller as the default interaction surface:
+A **dismiss action — clicking an accept/reject/close control — often deletes the very element (and its parent frame or overlay) that was just clicked.** Accepting a cookie banner tears down the CMP iframe; closing a modal removes the dialog. Playwright's `click()` then keeps waiting on a now-gone element and can raise a timeout *even though the click worked*. A timeout after such an action is therefore **not proof of failure**: a click that succeeded might still surface as a timeout.
 
 ```js
-await stealth.click(page, page.getByRole("button", { name: "Continue" }));
-await stealth.fill(page, page.getByLabel("Email"), "user@example.com");
+// Trust the outcome, not the throw. Click, then verify by the absence of the banner:
+try {
+  await stealth.click(page, target.locator, { timeout: 5000 });
+} catch (e) { /* click may still have taken effect */ }
+await page.waitForTimeout(1200);
+var stillThere = await stealth.interactiveElements(page)
+  .then((list) => list.filter((e) => /Einverstanden|Alle akzeptieren/i.test(e.name || "")))
+  .then((hits) => hits.length);
+console.log("Dismissed:", stillThere === 0);
+```
+
+After a dismiss click, the agent **must** judge success by the *desired end-state* (the banner gone, the intended page shown), not by whether `click` resolved cleanly. If the click threw but the end-state is already achieved, treat it as success. Do not rerun startup or screenshot repeatedly because the parent node detached.
+
+Because such controls are often the dismiss button of a frame-hosted banner, diagnosing them follows the same cross-frame rules as `Dynamic And Framed UI`.
+
+## The REPL Call Budget
+
+Each `js_repl` call is killed by a default length cap, and a killed call **hard-resets the kernel — destroying every live handle** (`playwright`, `stealth`, `page`) and forcing a full restart. Multi-step sequences (`click` page-timeout + `waitForTimeout(9000)` + networkidle) routinely blow the cap. To keep the session alive:
+
+- Set `timeout_ms` on every call that chains waits. A click’s default page timeout is 10s, so a single click+wait can consume 15–20s; two in one call often exceed 30s.
+- **Do not put successive waits in one call.** Split long flows across separate `js_repl` calls so none trips the cap.
+- After a forced reset, rerun the full startup block (it is the only `ensureWebBrowser` launcher) before touching `page`.
+- Prefer resuming a running session over a fresh one: the persistent profile makes the open page recoverable.
+
+## Managed Input
+
+Use the session controller as the default interaction surface, and drive every action from a **controller-produced locator** (from `resolveVisible` or `interactiveElements`) rather than from a raw `page.getByRole(...)` you wrote yourself:
+
+```js
+var target = await stealth.resolveVisible(page, (frame) => frame.getByRole("button", { name: "Continue", exact: true }));
+await stealth.click(page, target.locator);
+var email = await stealth.resolveVisible(page, (frame) => frame.getByLabel("Email"));
+await stealth.fill(page, email.locator, "user@example.com");
 await stealth.press(page, "Enter");
-await stealth.hover(page, page.getByRole("link", { name: "Details" }));
-await stealth.check(page, page.getByLabel("Remember me"));
-await stealth.selectOption(page, page.getByLabel("Country"), "DE");
+var details = await stealth.resolveVisible(page, (frame) => frame.getByRole("link", { name: "Details" }));
+await stealth.hover(page, details.locator);
+await stealth.check(page, (await stealth.resolveVisible(page, (frame) => frame.getByLabel("Remember me"))).locator);
+await stealth.selectOption(page, (await stealth.resolveVisible(page, (frame) => frame.getByLabel("Country"))).locator, "DE");
+```
+
+`stealth.*` action methods **MUST** receive a locator produced by `resolveVisible` or `interactiveElements` (which accept a `frame => frame.getByRole(...)` callback and search every current and newly attached frame plus open shadow roots). Pass bare `page.getByRole(...)` or `page.getByLabel(...)` locators to a controller action **only** when you have already confirmed the control is in the main document; never reach for one as the default. A bare `page.getByRole("button", { name: "X" })` resolves only in the main document, so the moment a control sits in a frame or shadow root (a cookie/consent banner, a login iframe, an embedded widget), that locator silently misses it and times out. With the exact name unknown, obtain the locator from the inventory instead:
+
+```js
+var interactive = await stealth.interactiveElements(page);
+await stealth.click(page, interactive[<index>].locator);
 ```
 
 Available methods include `resolveVisible`, `interactiveElements`, `moveTo`, `click`, `doubleClick`, `hover`, `wheel`, `scroll`, `dragTo`, `type`, `fill`, `pressText`, `press`, `focus`, `check`, `uncheck`, `selectOption`, `tap`, `think`, `screenshot`, and `stop`.
