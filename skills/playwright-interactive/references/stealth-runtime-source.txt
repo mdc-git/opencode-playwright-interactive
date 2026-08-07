@@ -65,7 +65,7 @@ var ensureWebBrowser = async () => chromium.launchPersistentContext(userDataDir,
 
 If the direct bootstrap call fails, the agent **MAY** retry that same complete code block once. If it still fails, the agent **MUST** stop and report the error. The agent **MUST NOT** inspect the skill file, test `typeof ensureWebBrowser` before the bootstrap, create replacement functions, or open any browser.
 
-Web browsers use one persistent Chromium profile and one persistent behavioral identity under `~/.local/share/opencode/playwright-interactive/stealth/`. This preserves browser state and behavioral parameters across REPL and browser restarts. The user-data directory is exclusive, so close the current web context before switching desktop or mobile modes.
+Web browsers use a per-session Chromium profile and behavioral identity under the session's `opencode.tmpDir`. Each OpenCode session gets its own browser window and profile, so multiple sessions can run simultaneously. Within one session, desktop and mobile share the profile and must run sequentially.
 
 ## Preconditions
 
@@ -167,7 +167,7 @@ var reloadWebContexts = async function () {
 
 ## Default Stealth Web Session
 
-Run this cell once after the Playwright import. The standard Chromium workflow uses it by default for every web session. It keeps one persistent Chromium profile and one stable behavioral identity across REPL and browser restarts, then registers every page and popup created by that context. No extra tool, package or runtime file is required.
+Run this cell once after the Playwright import. The standard Chromium workflow uses it by default for every web session. It keeps a per-session Chromium profile and stable behavioral identity, then registers every page and popup created by that context. No extra tool, package or runtime file is required.
 
 ```js
 var stealthSleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -250,7 +250,7 @@ var createStealthProfile = () => normalizeStealthProfile({
   idleInterval: stealthUniform(1700, 2300),
 });
 var stealthPaths = async ({ dataDir } = {}) => {
-  const root = path.resolve(dataDir || path.join(opencode.homeDir || opencode.tmpDir, ".local", "share", "opencode", "playwright-interactive", "stealth"));
+  const root = path.resolve(dataDir || path.join(opencode.tmpDir || opencode.homeDir, "stealth"));
   return {
     root,
     profile: path.join(root, "behavior.json"),
@@ -926,7 +926,7 @@ var launchStealthChromium = createStealthController;
 var ensureStealthController = async (kind, options) => {
   const current = kind === "mobile" ? mobileStealth : stealth;
   if (current && current.state() === "open") return current;
-  const root = path.resolve(options.dataDir || path.join(opencode.homeDir || opencode.tmpDir, ".local", "share", "opencode", "playwright-interactive", "stealth"));
+  const root = path.resolve(options.dataDir || path.join(opencode.tmpDir || opencode.homeDir, "stealth"));
   const key = `${kind}:${root}`;
   if (!stealthControllerLaunches.has(key)) stealthControllerLaunches.set(key, createStealthController(options).finally(() => stealthControllerLaunches.delete(key)));
   const session = await stealthControllerLaunches.get(key);
@@ -1046,7 +1046,7 @@ Reload rules:
 - Electron renderer-only change: `await appWindow.reload({ waitUntil: "domcontentloaded" })`.
 - Electron main-process, preload, startup, or process-ownership change: close and relaunch Electron.
 
-The default desktop and mobile web sessions use persistent Chromium contexts. Leave `webProfileDir` and `mobileProfileDir` unset to use the shared installation profile and behavioral identity. Only one of those contexts can use the shared profile at a time because Chromium locks its user-data directory. Close the first session before switching modes. Set a deliberate separate data directory only when isolated browser identities are required.
+The default desktop and mobile web sessions use persistent Chromium contexts within the session profile. Leave `webProfileDir` and `mobileProfileDir` unset to use the session profile. Desktop and mobile share the session profile and must run sequentially. Set a deliberate separate data directory only when isolated browser identities are required.
 
 Use `stealth` or `mobileStealth` session methods with an explicit Page, for example `await stealth.click(page, locator)`, `await stealth.fill(page, locator, "text")`, or `await mobileStealth.tap(mobilePage, locator)`. Direct locator, mouse, keyboard, touchscreen, or DOM operations remain valid Playwright but are unmanaged because public Playwright has no supported transparent interception layer.
 
@@ -1231,7 +1231,7 @@ appWindow = undefined;
 console.log("Playwright session closed");
 ```
 
-Wait for `Playwright session closed` before invoking `js_repl_reset` or exiting. The shared Chromium profile remains on disk intentionally, while the active context and its idle timers are closed.
+Wait for `Playwright session closed` before invoking `js_repl_reset` or exiting. The session profile is cleaned up with the session, while the active context and its idle timers are closed.
 
 ## Signoff
 

@@ -83,7 +83,7 @@ Set `HEADLESS = true` only when the environment has no graphical display. Do not
 - Use `stealth.newPage()` rather than `browser.newPage()`.
 - Use controller methods with an explicit `Page` for behavior-sensitive input.
 - Direct locator, mouse, keyboard, touchscreen, and DOM mutation calls are ordinary unmanaged Playwright and do not receive behavioral shaping.
-- The persistent profile is exclusive. Close desktop before starting mobile when both use the default profile.
+- Each OpenCode session gets its own Chrome profile under its unique `opencode.tmpDir`, so multiple OpenCode sessions can run browsers simultaneously without conflict. Desktop and mobile within one session share that session's profile and must run sequentially.
 - Never use a personal Chrome profile.
 
 ## Navigate
@@ -249,7 +249,7 @@ Available methods include `resolveVisible`, `interactiveElements`, `moveTo`, `cl
 
 ## Mobile
 
-Close desktop first when using the shared profile, then use the existing runtime:
+Close desktop first when using the session profile, then use the existing runtime:
 
 ```js
 await stealth.close();
@@ -327,7 +327,7 @@ if (stealth) await stealth.close().catch(() => {});
 console.log("Playwright session closed");
 ```
 
-Wait for `Playwright session closed` before resetting the REPL. Normal cleanup preserves the dedicated persistent profile. `await stealth.resetProfile()` is destructive: it closes the session and deletes the complete dedicated identity without relaunching.
+Wait for `Playwright session closed` before resetting the REPL. Normal cleanup preserves the session profile. `await stealth.resetProfile()` is destructive: it closes the session and deletes the complete dedicated identity without relaunching.
 
 ## Limits
 
