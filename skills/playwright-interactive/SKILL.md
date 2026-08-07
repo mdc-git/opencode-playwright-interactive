@@ -12,6 +12,8 @@ metadata:
 
 Use a persistent `js_repl` Playwright session to debug local web or Electron apps. Keep browser and page handles alive across iterations, and run functional and visual QA without restarting the runtime unless process ownership or startup code changed.
 
+Web browsers use a fresh, persistent Chromium profile inside `opencode.tmpDir`, the `js_repl` session's temporary directory. This preserves browser-level state, such as language and translation preferences, while the session is active without writing it to the application workspace. `js_repl` removes this directory after it closes the browser at session shutdown.
+
 ## Preconditions
 
 - The `js_repl` and `js_repl_reset` tools must be available. If they are missing, stop and tell the user to copy this distribution's `tools/` directory to `.opencode/tools/` and fully restart OpenCode.
@@ -66,9 +68,13 @@ var mobilePage;
 var electronApp;
 var appWindow;
 var HEADLESS = false;
+var path;
+var webProfileDir;
+var mobileProfileDir;
 
 try {
   ({ chromium, _electron: electronLauncher } = await import("playwright"));
+  path = await import("node:path");
   console.log("Playwright loaded");
 } catch (error) {
   throw new Error(
@@ -83,6 +89,7 @@ Shared helpers:
 
 ```js
 var resetWebHandles = function () {
+  browser = undefined;
   context = undefined;
   page = undefined;
   mobileContext = undefined;
@@ -90,12 +97,35 @@ var resetWebHandles = function () {
 };
 
 var ensureWebBrowser = async function () {
-  if (browser && !browser.isConnected()) {
-    browser = undefined;
+  if (context && !context.browser()?.isConnected()) {
     resetWebHandles();
   }
-  browser ??= await chromium.launch({ headless: HEADLESS });
-  return browser;
+  if (!context) {
+    webProfileDir ??= path.join(opencode.tmpDir, "playwright-desktop-profile");
+    context = await chromium.launchPersistentContext(webProfileDir, {
+      headless: HEADLESS,
+      viewport: null,
+    });
+    browser = context.browser();
+  }
+  return context;
+};
+
+var ensureMobileBrowser = async function () {
+  if (mobileContext && !mobileContext.browser()?.isConnected()) {
+    mobileContext = undefined;
+    mobilePage = undefined;
+  }
+  if (!mobileContext) {
+    mobileProfileDir ??= path.join(opencode.tmpDir, "playwright-mobile-profile");
+    mobileContext = await chromium.launchPersistentContext(mobileProfileDir, {
+      headless: HEADLESS,
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+    });
+  }
+  return mobileContext;
 };
 
 var reloadWebContexts = async function () {
@@ -113,7 +143,7 @@ If a handle is stale, set it to `undefined` and rerun the focused setup cell. Ke
 
 ## Web Sessions
 
-Use explicit viewports for deterministic iteration and screenshots. Treat native-window behavior as a separate headed validation pass.
+Desktop web sessions use a native, user-resizable window by default. Create a separate explicit-viewport context only when deterministic screenshot dimensions are required.
 
 Desktop:
 
@@ -122,7 +152,6 @@ var TARGET_URL = "http://127.0.0.1:3000";
 
 if (page?.isClosed()) page = undefined;
 await ensureWebBrowser();
-context ??= await browser.newContext({ viewport: { width: 1600, height: 900 } });
 page ??= await context.newPage();
 page.setDefaultTimeout(10000);
 page.setDefaultNavigationTimeout(30000);
@@ -138,12 +167,7 @@ var MOBILE_TARGET_URL = typeof TARGET_URL === "string"
   : "http://127.0.0.1:3000";
 
 if (mobilePage?.isClosed()) mobilePage = undefined;
-await ensureWebBrowser();
-mobileContext ??= await browser.newContext({
-  viewport: { width: 390, height: 844 },
-  isMobile: true,
-  hasTouch: true,
-});
+await ensureMobileBrowser();
 mobilePage ??= await mobileContext.newPage();
 mobilePage.setDefaultTimeout(10000);
 mobilePage.setDefaultNavigationTimeout(30000);
@@ -156,11 +180,11 @@ Native-window pass:
 ```js
 await page?.close().catch(() => {});
 await context?.close().catch(() => {});
+browser = undefined;
 page = undefined;
 context = undefined;
 
 await ensureWebBrowser();
-context = await browser.newContext({ viewport: null });
 page = await context.newPage();
 await page.goto(TARGET_URL, { waitUntil: "domcontentloaded" });
 console.log("Loaded native window:", await page.title());
@@ -371,10 +395,12 @@ mobileContext = undefined;
 mobilePage = undefined;
 electronApp = undefined;
 appWindow = undefined;
+webProfileDir = undefined;
+mobileProfileDir = undefined;
 console.log("Playwright session closed");
 ```
 
-Wait for `Playwright session closed` before invoking `js_repl_reset` or exiting.
+Wait for `Playwright session closed` before invoking `js_repl_reset` or exiting. `js_repl` deletes the session directory and its browser profiles when the session ends.
 
 ## Signoff
 
