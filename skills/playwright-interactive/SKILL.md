@@ -160,6 +160,7 @@ Before running another inspection script or attempting another locator, capture 
 var stuckScreenshot = await stealth.screenshot(page, {
   type: "png",
   scale: "css",
+  fullPage: true,
 });
 await opencode.emitImage({
   bytes: stuckScreenshot,
@@ -168,7 +169,68 @@ await opencode.emitImage({
 });
 ```
 
-The agent **MUST** visually inspect the emitted image before choosing the next action. It **MUST NOT** continue cycling through selectors, code inspection, or speculative scripts without this visual checkpoint. For mobile, use `mobileStealth.screenshot(mobilePage, ...)` with the same options. If the relevant content may be below the fold, a full-page screenshot **MAY** follow the initial viewport screenshot.
+The agent **MUST** visually inspect the emitted image before choosing the next action. It **MUST NOT** continue cycling through selectors, code inspection, or speculative scripts without this visual checkpoint. For mobile, use `mobileStealth.screenshot(mobilePage, ...)` with the same options. Screenshots **SHOULD** use `fullPage: true`; fall back to a viewport capture only when full-page capture fails or exceeds the image attachment limit.
+
+## Dynamic And Framed UI
+
+`page.getByRole()` and other page locators search the main frame, not every child frame. User-visible controls may live in same-origin or cross-origin frames, and those frames may attach after `domcontentloaded`. Absence from the main-frame DOM is not evidence that a visible control is absent from the browser UI.
+
+When the exact accessible name is already known, resolve it across current and newly attached frames through the controller:
+
+```js
+var resolvedTarget = await stealth.resolveVisible(
+  page,
+  (frame) => frame.getByRole("button", { name: "Continue", exact: true }),
+  { timeout: 5000 },
+);
+console.log("Target frame:", resolvedTarget.frame.url());
+await stealth.click(page, resolvedTarget.locator);
+```
+
+When the exact element is unknown, take one snapshot of all visible interactive DOM elements across every current frame and open shadow root. The first inventory after navigation allows one short render window for asynchronously attached UI; it does not wait for element counts to settle or truncate the result, and later inventories are immediate. It returns live locators plus semantic evidence; choose the element whose role, accessible-name evidence, state, and context fit the user's request:
+
+```js
+var interactive = await stealth.interactiveElements(page);
+console.log(interactive.map((entry, index) =>
+  `${index} frame=${entry.frameIndex} ${entry.role || entry.tag} ${JSON.stringify(entry.name)} disabled=${entry.disabled}`
+).join("\n"));
+```
+
+The agent **MUST** read the complete inventory and identify the intended entry semantically. Before that review it **MUST NOT** filter entries by role, tag, frame, URL, guessed keyword, or language-specific regex; controls that look like buttons may be links or custom-role elements. Once identified, interact with the returned locator directly, for example `await stealth.click(page, interactive[index].locator)`. If no inventory entry clearly fits the request, capture and visually inspect the required full-page screenshot; use its actual visible wording with `stealth.resolveVisible()` rather than guessing another selector. If a frame or control attaches after the snapshot, take one fresh complete inventory rather than waiting for arbitrary DOM stability.
+
+The agent **MUST NOT** conclude that a requested visible control does not exist after querying only the main frame. It **MUST NOT** inspect frames one by one across multiple tool calls when these controller methods can establish the result once.
+
+## Target Diagnostics
+
+Playwright locators can resolve elements inside frames and open shadow roots. A uniquely resolved, visible locator can still fail because of an overlay, animation, retargeted hit testing, or another interaction boundary. After the required screenshot, the agent **SHOULD** diagnose all of these in one locator-scoped call rather than separately probing documents, every frame, and possible shadow roots:
+
+```js
+var targetDiagnostic = await targetLocator.evaluate((element) => {
+  var rect = element.getBoundingClientRect();
+  var root = element.getRootNode();
+  var hitTestRoot = typeof root.elementFromPoint === "function"
+    ? root
+    : element.ownerDocument;
+  var hit = hitTestRoot.elementFromPoint(
+    rect.left + rect.width / 2,
+    rect.top + rect.height / 2,
+  );
+  return {
+    frameUrl: element.ownerDocument.defaultView?.location?.href,
+    rootType: root.constructor?.name,
+    tag: element.tagName,
+    role: element.getAttribute("role"),
+    text: element.textContent?.trim().slice(0, 120),
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    hitTag: hit?.tagName,
+    hitClass: typeof hit?.className === "string" ? hit.className : undefined,
+    targetOwnsHit: hit === element || element.contains(hit),
+  };
+});
+console.log(targetDiagnostic);
+```
+
+Because `locator.evaluate()` runs in the target's own realm, this single inspection already identifies its frame URL and document-versus-shadow-root context. The agent **MUST NOT** repeat the same failed managed action unchanged or enumerate unrelated frames and roots after this diagnostic. If an unrelated element owns the hit point, wait for or dismiss the blocking UI using managed input. If the target owns the hit point but the managed action still fails, report the controller defect with the diagnostic and screenshot instead of silently forcing the action.
 
 ## Managed Input
 
@@ -183,7 +245,7 @@ await stealth.check(page, page.getByLabel("Remember me"));
 await stealth.selectOption(page, page.getByLabel("Country"), "DE");
 ```
 
-Available methods include `moveTo`, `click`, `doubleClick`, `hover`, `wheel`, `scroll`, `dragTo`, `type`, `fill`, `pressText`, `press`, `focus`, `check`, `uncheck`, `selectOption`, `tap`, `think`, `screenshot`, and `stop`.
+Available methods include `resolveVisible`, `interactiveElements`, `moveTo`, `click`, `doubleClick`, `hover`, `wheel`, `scroll`, `dragTo`, `type`, `fill`, `pressText`, `press`, `focus`, `check`, `uncheck`, `selectOption`, `tap`, `think`, `screenshot`, and `stop`.
 
 ## Mobile
 
