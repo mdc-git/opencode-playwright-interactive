@@ -314,9 +314,11 @@ var stealthTargetBox = async (page, target) => {
     ];
     const clickable = await target.evaluate((element, points) => {
       const rect = element.getBoundingClientRect();
+      const root = element.getRootNode();
+      const hitTestRoot = typeof root.elementFromPoint === "function" ? root : element.ownerDocument;
       const targetLink = element.closest?.("a[href]");
       return points.filter((point) => {
-        const top = document.elementFromPoint(rect.left + rect.width * point.x, rect.top + rect.height * point.y);
+        const top = hitTestRoot.elementFromPoint(rect.left + rect.width * point.x, rect.top + rect.height * point.y);
         if (!top) return false;
         if (top === element || element.contains(top)) return true;
         const topLink = top.closest?.("a[href]");
@@ -716,6 +718,98 @@ var createStealthController = async ({ chromium, headless = HEADLESS, dataDir, l
     pageState.queue = result.catch(() => {});
     return result;
   };
+  const resolveVisible = async (currentPage, locatorForFrame, { timeout = 5000 } = {}) => {
+    requirePage(currentPage);
+    if (typeof locatorForFrame !== "function") throw new TypeError("resolveVisible requires a locator factory");
+    const deadline = Date.now() + stealthClamp(Number(timeout) || 0, 0, 30000);
+    do {
+      const matches = [];
+      for (const frame of currentPage.frames()) {
+        let locator;
+        try { locator = locatorForFrame(frame); } catch { continue; }
+        const count = await locator?.count?.().catch(() => 0) || 0;
+        for (let index = 0; index < count; index += 1) {
+          const candidate = locator.nth(index);
+          if (await candidate.isVisible().catch(() => false)) matches.push({ frame, locator: candidate });
+        }
+      }
+      if (matches.length === 1) return Object.freeze(matches[0]);
+      if (matches.length > 1) throw new Error(`Target is ambiguous across ${matches.length} visible frame matches`);
+      await stealthSleep(100);
+    } while (Date.now() < deadline);
+    throw new Error(`Visible target did not appear in any frame within ${Math.max(0, Number(timeout) || 0)}ms. Frames: ${currentPage.frames().map((frame) => frame.url()).join(", ")}`);
+  };
+  const interactiveElements = async (currentPage, { includeHidden = false } = {}) => {
+    const pageState = requirePage(currentPage);
+    const readinessDelay = pageState.inventoryReadyAt - Date.now();
+    if (readinessDelay > 0) await stealthSleep(readinessDelay);
+    const allowedRoles = ["button", "link", "checkbox", "radio", "textbox", "searchbox", "combobox", "listbox", "option", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "slider", "spinbutton"];
+    const selector = "button, a[href], input:not([type=hidden]), select, textarea, summary, [role], [contenteditable=true], [tabindex]:not([tabindex='-1'])";
+    const frames = currentPage.frames().filter((frame) => frame === currentPage.mainFrame() || !["", "about:blank"].includes(frame.url()));
+    const groups = await Promise.all(frames.map(async (frame, frameIndex) => {
+      const candidates = frame.locator(selector);
+      const details = await candidates.evaluateAll((elements, options) => elements.map((element, index) => {
+        const rect = element.getBoundingClientRect();
+        let visible = rect.width > 0 && rect.height > 0 && !element.hidden;
+        if (visible && typeof element.checkVisibility === "function") visible = element.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
+        if (!options.includeHidden && !visible) return undefined;
+        const tag = element.tagName.toLowerCase();
+        const type = element.getAttribute("type")?.toLowerCase();
+        const labelledBy = (element.getAttribute("aria-labelledby") || "")
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((id) => element.ownerDocument.getElementById(id)?.textContent?.trim())
+          .filter(Boolean)
+          .join(" ");
+        const labels = element.labels ? [...element.labels].map((label) => label.textContent?.trim()).filter(Boolean).join(" ") : "";
+        const text = (element.textContent || "").trim();
+        const name = element.getAttribute("aria-label")?.trim()
+          || labelledBy
+          || labels
+          || element.getAttribute("alt")?.trim()
+          || text
+          || (["button", "submit", "reset"].includes(type) ? element.getAttribute("value")?.trim() : "")
+          || element.getAttribute("placeholder")?.trim()
+          || element.getAttribute("title")?.trim()
+          || "";
+        let role = element.getAttribute("role")?.trim() || "";
+        if (!role) {
+          if (tag === "button" || tag === "summary" || (tag === "input" && ["button", "submit", "reset", "image"].includes(type))) role = "button";
+          else if (tag === "a" && element.hasAttribute("href")) role = "link";
+          else if (tag === "input" && type === "checkbox") role = "checkbox";
+          else if (tag === "input" && type === "radio") role = "radio";
+          else if (tag === "select") role = element.multiple || element.size > 1 ? "listbox" : "combobox";
+          else if (tag === "textarea" || tag === "input" || element.isContentEditable) role = "textbox";
+        }
+        if (role && !options.allowedRoles.includes(role)) return undefined;
+        return {
+          index,
+          visible,
+          tag,
+          type: type || "",
+          role,
+          name: name.slice(0, 240),
+          disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"),
+          checked: "checked" in element ? Boolean(element.checked) : element.getAttribute("aria-checked"),
+          selected: "selected" in element ? Boolean(element.selected) : element.getAttribute("aria-selected"),
+          href: element.href || "",
+        };
+      }).filter(Boolean), { includeHidden, allowedRoles }).catch(() => []);
+      return { frame, frameIndex, candidates, details, index: 0 };
+    }));
+    const entries = [];
+    while (true) {
+      let advanced = false;
+      for (const group of groups) {
+        if (group.index >= group.details.length) continue;
+        advanced = true;
+        const details = group.details[group.index++];
+        entries.push(Object.freeze({ frame: group.frame, frameIndex: group.frameIndex, locator: group.candidates.nth(details.index), frameUrl: group.frame.url(), ...details }));
+      }
+      if (!advanced) break;
+    }
+    return Object.freeze(entries);
+  };
   const targetBox = async (currentPage, target, action, trialOptions) => {
     if (target && typeof target.boundingBox === "function") {
       if (trialOptions && typeof target.click === "function") await target.click({ ...trialOptions, trial: true });
@@ -765,13 +859,13 @@ var createStealthController = async ({ chromium, headless = HEADLESS, dataDir, l
     if (status !== "open" || !currentPage || currentPage.isClosed()) return;
     if (currentPage.context() !== persistentContext) throw new Error("Cannot register a Page from another BrowserContext");
     if (stateByPage.has(currentPage)) return;
-    const pageState = { x: undefined, y: undefined, busy: false, action: undefined, lastActivity: Date.now(), timer: undefined, stopped: false, background: false, paused: new Set(), queue: Promise.resolve(), frames: new Set(), workers: new Set(), removers: [] };
+    const pageState = { x: undefined, y: undefined, busy: false, action: undefined, lastActivity: Date.now(), inventoryReadyAt: Date.now() + 1800, timer: undefined, stopped: false, background: false, paused: new Set(), queue: Promise.resolve(), frames: new Set(), workers: new Set(), removers: [] };
     stateByPage.set(currentPage, pageState); livePages.add(currentPage);
     const registerFrame = (frame) => { if (frame !== currentPage.mainFrame()) pageState.frames.add(frame); };
     const registerWorker = (worker) => { pageState.workers.add(worker); liveWorkers.add(worker); };
     const onClose = () => { livePages.delete(currentPage); stopPage(pageState); };
     const onFrameAttached = registerFrame;
-    const onFrameNavigated = registerFrame;
+    const onFrameNavigated = (frame) => { registerFrame(frame); if (frame === currentPage.mainFrame()) pageState.inventoryReadyAt = Date.now() + 1800; };
     const onFrameDetached = (frame) => pageState.frames.delete(frame);
     const onWorker = registerWorker;
     const onPopup = (popup) => registerPage(popup);
@@ -794,7 +888,9 @@ var createStealthController = async ({ chromium, headless = HEADLESS, dataDir, l
     newPage: async () => { const currentPage = await persistentContext.newPage(); registerPage(currentPage); return currentPage; },
     pageState: (currentPage) => { const pageState = requirePage(currentPage); return Object.freeze({ registered: true, busy: pageState.busy, action: pageState.action, timerActive: Boolean(pageState.timer), frameCount: pageState.frames.size, workerCount: pageState.workers.size, stopped: pageState.stopped }); },
     managed: (currentPage) => { requirePage(currentPage); return true; },
-    capabilities: () => Object.freeze({ state: status, profileKind, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, automaticPagesAndPopups: true, frameLifecycle: true, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, privatePlaywrightApis: false, tracing: false, har: false, video: false }), limitations: ["standard Playwright protocol/runtime signals remain", "network, TLS, GPU, OS, profile-history, worker-realm and long-horizon behavioral signals remain outside skill control"] }),
+    capabilities: () => Object.freeze({ state: status, profileKind, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, privatePlaywrightApis: false, tracing: false, har: false, video: false }), limitations: ["standard Playwright protocol/runtime signals remain", "network, TLS, GPU, OS, profile-history, worker-realm and long-horizon behavioral signals remain outside skill control"] }),
+    resolveVisible: (currentPage, locatorForFrame, options) => resolveVisible(currentPage, locatorForFrame, options),
+    interactiveElements: (currentPage, options) => interactiveElements(currentPage, options),
     moveTo: (currentPage, target) => queueAction(currentPage, "moveTo", async (pageState) => { const box = await targetBox(currentPage, target, "move"); await moveToPoint(currentPage, pageState, stealthPoint(box, profile)); }),
     click: (currentPage, target, options) => clickAction(currentPage, target, options),
     doubleClick: (currentPage, target, options) => clickAction(currentPage, target, options, 2),
