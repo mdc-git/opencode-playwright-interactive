@@ -12,6 +12,8 @@ Compared with one-shot shell commands, ad hoc Node scripts, or a fresh browser l
 
 The Playwright skill turns that persistent runtime into an interactive QA loop for browser and Electron applications. It supports targeted inspection, repeatable interactions, screenshots, and follow-up assertions without adding Playwright dependencies or browser binaries to each application workspace. The shared, managed runtime also avoids setup drift between projects while leaving each REPL session isolated.
 
+Chromium web sessions use the skill's inline default stealth bootstrap. It keeps one persistent Chromium profile and one installation-wide behavioral identity, registers every page and popup in the managed context and shapes actions made through the documented human actor. This is intended for authorized testing of sites you control, not as a guarantee of undetectability or protection bypass.
+
 ## Install
 
 Copy both directories into an OpenCode project's `.opencode/` directory:
@@ -66,6 +68,10 @@ Explicitly close browser resources before resetting the REPL or ending a browser
 ## Playwright Skill
 
 `skills/playwright-interactive/` provides persistent browser and Electron QA instructions. Before first use, call `js_repl_playwright_setup`; it installs Playwright 1.62.0 and Chromium under `~/.cache/opencode/playwright` by default, rather than modifying each application workspace. The REPL automatically resolves the shared library and browser path thereafter. Set `OPENCODE_PLAYWRIGHT_CACHE_DIR` to relocate the managed cache, `OPENCODE_PLAYWRIGHT_NPM_PATH` or `OPENCODE_PLAYWRIGHT_NPX_PATH` to select package executables, and `PLAYWRIGHT_BROWSERS_PATH` to reuse an existing browser cache.
+
+By default, the skill launches Chromium with `launchPersistentContext()` and stores browser data plus `behavior.json` under `~/.local/share/opencode/playwright-interactive/stealth/`. The behavioral parameters persist across sessions while event randomness is fresh. Chromium's user-data directory is exclusive, so desktop and mobile web contexts must use the default profile sequentially. The inline bootstrap uses standard Playwright mouse and keyboard APIs, supports Bezier movement, probabilistic overshoot, tremor, click hold, per-key timing and idle drift and does not add another tool or runtime file.
+
+Use `ensureWebBrowser()` for every Chromium web session. It is the only web launch path documented by the skill and always creates the persistent managed context. Use the managed actor for behavior-sensitive input, for example `human.click(locator)` and `human.type(locator, "text")`. Direct `locator.click()`, `fill()`, `pressSequentially()`, direct mouse calls and DOM assignment bypass that shaping. Playwright 1.62.0 still enables `Runtime.enable` as part of normal operation; this feature does not suppress or intercept it. Electron is unchanged.
 
 ## Configuration
 

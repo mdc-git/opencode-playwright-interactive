@@ -12,7 +12,9 @@ metadata:
 
 Use a persistent `js_repl` Playwright session to debug local web or Electron apps. Keep browser and page handles alive across iterations, and run functional and visual QA without restarting the runtime unless process ownership or startup code changed.
 
-Web browsers use a fresh, persistent Chromium profile inside `opencode.tmpDir`, the `js_repl` session's temporary directory. This preserves browser-level state, such as language and translation preferences, while the session is active without writing it to the application workspace. `js_repl` removes this directory after it closes the browser at session shutdown.
+**Mandatory web launch rule:** Every Chromium web session must use `ensureWebBrowser()` and the managed persistent stealth context defined below. Never call `chromium.launch()`, `browser.newPage()` or create a separate non-stealth web context. Do not present or consider a non-stealth Chromium launch as an alternative. Electron remains a separate, unchanged workflow.
+
+Web browsers use one persistent Chromium profile and one persistent behavioral identity under `~/.local/share/opencode/playwright-interactive/stealth/`. This preserves browser state and behavioral parameters across REPL and browser restarts. The user-data directory is exclusive, so close the current web context before switching desktop or mobile modes.
 
 ## Preconditions
 
@@ -36,7 +38,7 @@ After setup, verify the import through `js_repl`, because that is the runtime th
 1. Write a concise QA inventory before testing.
 2. Start or confirm the app's dev server and verify its port.
 3. Run the bootstrap cell once.
-4. Launch the correct browser or Electron runtime and retain its handles.
+4. Launch the managed Chromium web context with `ensureWebBrowser()`, or launch Electron using its unchanged workflow, and retain its handles.
 5. After each code change, reload renderer-only changes or relaunch process-owning changes.
 6. Run functional QA using normal user input.
 7. Run a separate visual QA pass and emit screenshots for review.
@@ -71,6 +73,10 @@ var HEADLESS = false;
 var path;
 var webProfileDir;
 var mobileProfileDir;
+var stealth;
+var mobileStealth;
+var human;
+var mobileHuman;
 
 try {
   ({ chromium, _electron: electronLauncher } = await import("playwright"));
@@ -94,38 +100,10 @@ var resetWebHandles = function () {
   page = undefined;
   mobileContext = undefined;
   mobilePage = undefined;
-};
-
-var ensureWebBrowser = async function () {
-  if (context && !context.browser()?.isConnected()) {
-    resetWebHandles();
-  }
-  if (!context) {
-    webProfileDir ??= path.join(opencode.tmpDir, "playwright-desktop-profile");
-    context = await chromium.launchPersistentContext(webProfileDir, {
-      headless: HEADLESS,
-      viewport: null,
-    });
-    browser = context.browser();
-  }
-  return context;
-};
-
-var ensureMobileBrowser = async function () {
-  if (mobileContext && !mobileContext.browser()?.isConnected()) {
-    mobileContext = undefined;
-    mobilePage = undefined;
-  }
-  if (!mobileContext) {
-    mobileProfileDir ??= path.join(opencode.tmpDir, "playwright-mobile-profile");
-    mobileContext = await chromium.launchPersistentContext(mobileProfileDir, {
-      headless: HEADLESS,
-      viewport: { width: 390, height: 844 },
-      isMobile: true,
-      hasTouch: true,
-    });
-  }
-  return mobileContext;
+  stealth = undefined;
+  mobileStealth = undefined;
+  human = undefined;
+  mobileHuman = undefined;
 };
 
 var reloadWebContexts = async function () {
@@ -138,6 +116,362 @@ var reloadWebContexts = async function () {
   console.log("Reloaded existing web tabs");
 };
 ```
+
+## Default Stealth Web Session
+
+Run this cell once after the Playwright import. The standard Chromium workflow uses it by default for every web session. It keeps one persistent Chromium profile and one stable behavioral identity across REPL and browser restarts, then registers every page and popup created by that context. No extra tool, package or runtime file is required.
+
+```js
+var stealthSleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+var stealthWriteQueue = Promise.resolve();
+var stealthStates = new WeakMap();
+var stealthActors = new WeakMap();
+var stealthUniform = (minimum, maximum) => minimum + Math.random() * (maximum - minimum);
+var stealthNormal = () => {
+  let first = 0;
+  let second = 0;
+  while (!first) first = Math.random();
+  while (!second) second = Math.random();
+  return Math.sqrt(-2 * Math.log(first)) * Math.cos(2 * Math.PI * second);
+};
+var stealthLogNormal = (mean, sigma) => Math.max(1, Math.exp(Math.log(Math.max(1, mean)) + sigma * stealthNormal()));
+var stealthClamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
+var stealthDefaults = {
+  schema: 1,
+  clickPrecision: 2.5,
+  curveFactor: 0.15,
+  overshootChance: 0.55,
+  overshootMin: 5,
+  overshootMax: 15,
+  tremorCount: 3,
+  tremorAmplitude: 1.5,
+  clickHoldMin: 50,
+  clickHoldMax: 120,
+  typingMean: 90,
+  typingSigma: 0.3,
+  keyHoldMin: 40,
+  keyHoldMax: 110,
+  actionGapMean: 400,
+  actionGapSigma: 0.35,
+  idleThreshold: 3000,
+  idleInterval: 2000,
+  idleDrift: 12,
+};
+var stealthNumber = (value, fallback, minimum, maximum) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? stealthClamp(number, minimum, maximum) : fallback;
+};
+var normalizeStealthProfile = (value) => {
+  if (!value || value.schema !== 1 || typeof value.profileId !== "string" || !value.profileId) return undefined;
+  const profile = { ...stealthDefaults, profileId: value.profileId };
+  profile.clickPrecision = stealthNumber(value.clickPrecision, profile.clickPrecision, 1, 5);
+  profile.curveFactor = stealthNumber(value.curveFactor, profile.curveFactor, 0.05, 0.3);
+  profile.overshootChance = stealthNumber(value.overshootChance, profile.overshootChance, 0, 1);
+  profile.overshootMin = stealthNumber(value.overshootMin, profile.overshootMin, 2, 10);
+  profile.overshootMax = stealthNumber(value.overshootMax, profile.overshootMax, 8, 25);
+  profile.tremorCount = Math.round(stealthNumber(value.tremorCount, profile.tremorCount, 2, 5));
+  profile.tremorAmplitude = stealthNumber(value.tremorAmplitude, profile.tremorAmplitude, 0.25, 3);
+  profile.clickHoldMin = stealthNumber(value.clickHoldMin, profile.clickHoldMin, 35, 100);
+  profile.clickHoldMax = stealthNumber(value.clickHoldMax, profile.clickHoldMax, 80, 160);
+  profile.typingMean = stealthNumber(value.typingMean, profile.typingMean, 50, 150);
+  profile.typingSigma = stealthNumber(value.typingSigma, profile.typingSigma, 0.1, 0.6);
+  profile.keyHoldMin = stealthNumber(value.keyHoldMin, profile.keyHoldMin, 20, 100);
+  profile.keyHoldMax = stealthNumber(value.keyHoldMax, profile.keyHoldMax, 60, 180);
+  profile.actionGapMean = stealthNumber(value.actionGapMean, profile.actionGapMean, 200, 800);
+  profile.actionGapSigma = stealthNumber(value.actionGapSigma, profile.actionGapSigma, 0.1, 0.6);
+  profile.idleThreshold = stealthNumber(value.idleThreshold, profile.idleThreshold, 2500, 8000);
+  profile.idleInterval = stealthNumber(value.idleInterval, profile.idleInterval, 1000, 4000);
+  profile.idleDrift = stealthNumber(value.idleDrift, profile.idleDrift, 4, 24);
+  if (profile.overshootMax < profile.overshootMin) profile.overshootMax = profile.overshootMin + 1;
+  if (profile.clickHoldMax < profile.clickHoldMin) profile.clickHoldMax = profile.clickHoldMin + 1;
+  if (profile.keyHoldMax < profile.keyHoldMin) profile.keyHoldMax = profile.keyHoldMin + 1;
+  return profile;
+};
+var createStealthProfile = () => normalizeStealthProfile({
+  ...stealthDefaults,
+  profileId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+  clickPrecision: stealthUniform(2, 3),
+  curveFactor: stealthUniform(0.12, 0.18),
+  overshootChance: stealthUniform(0.4, 0.7),
+  overshootMax: stealthUniform(12, 18),
+  tremorCount: Math.round(stealthUniform(2, 5)),
+  typingMean: stealthUniform(75, 105),
+  typingSigma: stealthUniform(0.25, 0.35),
+  actionGapMean: stealthUniform(340, 460),
+  actionGapSigma: stealthUniform(0.3, 0.4),
+  idleInterval: stealthUniform(1700, 2300),
+});
+var stealthPaths = async ({ dataDir } = {}) => {
+  const root = dataDir || path.join(opencode.homeDir || opencode.tmpDir, ".local", "share", "opencode", "playwright-interactive", "stealth");
+  return { root, profile: path.join(root, "behavior.json"), userData: path.join(root, "user-data") };
+};
+var saveStealthProfile = async (file, profile) => {
+  const fs = await import("node:fs/promises");
+  const serialized = JSON.stringify(profile, null, 2);
+  if (serialized.length > 16 * 1024) throw new Error("Stealth behavioral profile is unexpectedly large");
+  stealthWriteQueue = stealthWriteQueue.then(async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    const temporary = `${file}.${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}.tmp`;
+    const handle = await fs.open(temporary, "w", 0o600);
+    try {
+      await handle.writeFile(serialized, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.rename(temporary, file);
+  });
+  return stealthWriteQueue;
+};
+var loadStealthProfile = async ({ dataDir } = {}) => {
+  const fs = await import("node:fs/promises");
+  const { profile } = await stealthPaths({ dataDir });
+  let loaded;
+  try {
+    const stat = await fs.stat(profile);
+    if (stat.size <= 16 * 1024) loaded = normalizeStealthProfile(JSON.parse(await fs.readFile(profile, "utf8")));
+  } catch {}
+  const value = loaded || createStealthProfile();
+  await saveStealthProfile(profile, value);
+  return value;
+};
+var resetStealthProfile = async ({ dataDir } = {}) => {
+  const fs = await import("node:fs/promises");
+  const { profile } = await stealthPaths({ dataDir });
+  await stealthWriteQueue.catch(() => {});
+  await fs.rm(profile, { force: true });
+};
+var stealthTargetBox = async (page, target) => {
+  if (typeof target === "object" && target && typeof target.boundingBox === "function") {
+    if (typeof target.isEnabled === "function" && !(await target.isEnabled())) throw new Error("Stealth target is disabled");
+    await target.scrollIntoViewIfNeeded();
+    const box = await target.boundingBox();
+    if (!box || box.width <= 0 || box.height <= 0) throw new Error("Stealth target is not visible");
+    const unobscured = await target.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return !top || top === element || element.contains(top);
+    }).catch(() => true);
+    if (!unobscured) throw new Error("Stealth target is obscured");
+    return box;
+  }
+  if (target && Number.isFinite(target.x) && Number.isFinite(target.y)) return { x: target.x, y: target.y, width: 1, height: 1 };
+  throw new TypeError("Stealth target must be a Locator or { x, y }");
+};
+var stealthViewport = async (page) => {
+  const viewport = page.viewportSize();
+  if (viewport) return viewport;
+  return page.evaluate(() => ({ width: window.innerWidth || 960, height: window.innerHeight || 540 })).catch(() => ({ width: 960, height: 540 }));
+};
+var stealthPoint = (box, profile) => ({
+  x: box.width <= 1 ? box.x : stealthClamp(box.x + box.width / 2 + stealthNormal() * profile.clickPrecision, box.x + 1, box.x + Math.max(1, box.width - 1)),
+  y: box.height <= 1 ? box.y : stealthClamp(box.y + box.height / 2 + stealthNormal() * profile.clickPrecision, box.y + 1, box.y + Math.max(1, box.height - 1)),
+});
+var stealthPath = (from, to, profile) => {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const distance = Math.hypot(dx, dy) || 1;
+  const perpendicular = { x: -dy / distance, y: dx / distance };
+  const bend = Math.min(80, distance * profile.curveFactor) * (Math.random() < 0.5 ? -1 : 1);
+  const first = { x: from.x + dx * 0.3 + perpendicular.x * bend, y: from.y + dy * 0.3 + perpendicular.y * bend };
+  const second = { x: from.x + dx * 0.7 - perpendicular.x * bend * 0.7, y: from.y + dy * 0.7 - perpendicular.y * bend * 0.7 };
+  const steps = Math.max(5, Math.min(30, Math.round(distance / 15)));
+  const points = [];
+  for (let index = 1; index <= steps; index += 1) {
+    const t = index / steps;
+    const inverse = 1 - t;
+    points.push({
+      x: inverse ** 3 * from.x + 3 * inverse ** 2 * t * first.x + 3 * inverse * t ** 2 * second.x + t ** 3 * to.x,
+      y: inverse ** 3 * from.y + 3 * inverse ** 2 * t * first.y + 3 * inverse * t ** 2 * second.y + t ** 3 * to.y,
+    });
+  }
+  if (distance > 40 && Math.random() < profile.overshootChance) {
+    const amount = stealthUniform(profile.overshootMin, profile.overshootMax);
+    points.splice(-1, 0, { x: to.x + dx / distance * amount, y: to.y + dy / distance * amount });
+  }
+  return points;
+};
+var stealthActorForPage = (page, profile, config = {}) => {
+  let state = stealthStates.get(page);
+  if (state && !state.stopped) return stealthActors.get(page);
+  state = { x: undefined, y: undefined, busy: false, lastActivity: Date.now(), timer: undefined, stopped: false };
+  stealthStates.set(page, state);
+  let scheduleDrift;
+  const markActivity = () => {
+    state.lastActivity = Date.now();
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = undefined;
+    scheduleDrift();
+  };
+  const waitForActionGap = async () => await stealthSleep(Math.min(config.maxActionGap || 1200, stealthLogNormal(profile.actionGapMean, profile.actionGapSigma)));
+  const movePoints = async (points, duration) => {
+    const perPoint = Math.max(5, duration / Math.max(1, points.length));
+    for (const point of points) {
+      if (state.stopped || page.isClosed()) return;
+      await page.mouse.move(point.x, point.y);
+      state.x = point.x;
+      state.y = point.y;
+      await stealthSleep(stealthUniform(perPoint * 0.75, perPoint * 1.25));
+    }
+  };
+  const moveToPoint = async (point) => {
+    const viewport = await stealthViewport(page);
+    const from = { x: state.x ?? viewport.width / 2, y: state.y ?? viewport.height / 2 };
+    await movePoints(stealthPath(from, point, profile), stealthClamp(Math.hypot(point.x - from.x, point.y - from.y) * 0.5 + 80, 80, 350));
+  };
+  scheduleDrift = () => {
+    if (state.stopped || state.timer) return;
+    const delay = Math.max(250, state.lastActivity + profile.idleThreshold - Date.now());
+    state.timer = setTimeout(async () => {
+      state.timer = undefined;
+      if (state.stopped || page.isClosed()) return;
+      if (state.busy) {
+        state.lastActivity = Date.now();
+        return scheduleDrift();
+      }
+      if (Date.now() - state.lastActivity < profile.idleThreshold) return scheduleDrift();
+      const viewport = await stealthViewport(page);
+      const from = { x: state.x ?? viewport.width / 2, y: state.y ?? viewport.height / 2 };
+      const next = {
+        x: stealthClamp(from.x + stealthUniform(-profile.idleDrift, profile.idleDrift), 20, Math.max(20, viewport.width - 20)),
+        y: stealthClamp(from.y + stealthUniform(-profile.idleDrift, profile.idleDrift), 20, Math.max(20, viewport.height - 20)),
+      };
+      state.busy = true;
+      try { await page.mouse.move(next.x, next.y); state.x = next.x; state.y = next.y; } catch {}
+      state.busy = false;
+      state.lastActivity = Date.now() - profile.idleThreshold + profile.idleInterval;
+      scheduleDrift();
+    }, delay);
+    if (typeof state.timer.unref === "function") state.timer.unref();
+  };
+  const actor = {
+    async moveTo(target) {
+      await waitForActionGap();
+      const box = await stealthTargetBox(page, target);
+      state.busy = true;
+      try { await moveToPoint(stealthPoint(box, profile)); } finally { state.busy = false; markActivity(); }
+    },
+    async click(target) {
+      await waitForActionGap();
+      const box = await stealthTargetBox(page, target);
+      const point = stealthPoint(box, profile);
+      state.busy = true;
+      try {
+        await moveToPoint(point);
+        const tremors = stealthClamp(Math.round(stealthUniform(2, profile.tremorCount + 1)), 2, 5);
+        for (let index = 0; index < tremors; index += 1) {
+          await page.mouse.move(point.x + stealthUniform(-profile.tremorAmplitude, profile.tremorAmplitude), point.y + stealthUniform(-profile.tremorAmplitude, profile.tremorAmplitude));
+          await stealthSleep(stealthUniform(15, 45));
+        }
+        await page.mouse.move(point.x, point.y);
+        await page.mouse.down();
+        try { await stealthSleep(stealthUniform(profile.clickHoldMin, profile.clickHoldMax)); } finally { await page.mouse.up(); }
+        state.x = point.x;
+        state.y = point.y;
+      } finally { state.busy = false; markActivity(); }
+    },
+    async type(target, text) {
+      await this.click(target);
+      await this.pressText(text);
+    },
+    async pressText(text) {
+      if (typeof text !== "string") throw new TypeError("Stealth pressText requires a string");
+      state.busy = true;
+      try {
+        for (const character of text) {
+          if (/^[\p{Letter}\p{Number}\p{P}\p{S}\p{Zs}]$/u.test(character)) {
+            try { await page.keyboard.press(character, { delay: stealthUniform(profile.keyHoldMin, profile.keyHoldMax) }); } catch { await page.keyboard.insertText(character); }
+          } else await page.keyboard.insertText(character);
+          await stealthSleep(stealthLogNormal(character === " " ? 120 : profile.typingMean, character === " " ? 0.25 : profile.typingSigma));
+        }
+      } finally { state.busy = false; markActivity(); }
+    },
+    async press(key) {
+      state.busy = true;
+      try { await page.keyboard.press(key, { delay: stealthUniform(profile.keyHoldMin, profile.keyHoldMax) }); } finally { state.busy = false; markActivity(); }
+    },
+    async think(milliseconds) {
+      state.busy = true;
+      try { await stealthSleep(milliseconds); } finally { state.busy = false; markActivity(); }
+    },
+    stop() {
+      state.stopped = true;
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = undefined;
+    },
+  };
+  page.once("close", actor.stop);
+  stealthActors.set(page, actor);
+  scheduleDrift();
+  return actor;
+};
+var launchStealthChromium = async ({ chromium, headless = HEADLESS, dataDir, launchOptions = {}, contextOptions = {}, behavior = {} } = {}) => {
+  if (!chromium?.launchPersistentContext) throw new TypeError("launchStealthChromium requires the shared Playwright chromium object");
+  const paths = await stealthPaths({ dataDir });
+  const profile = await loadStealthProfile({ dataDir: paths.root });
+  const args = [...(launchOptions.args || [])];
+  if (!args.includes("--disable-blink-features=AutomationControlled")) args.push("--disable-blink-features=AutomationControlled");
+  let persistentContext;
+  try {
+    persistentContext = await chromium.launchPersistentContext(paths.userData, { ...launchOptions, ...contextOptions, headless: launchOptions.headless ?? headless, args });
+  } catch (error) {
+    throw new Error(`Could not open the persistent stealth profile at ${paths.userData}. Close any other session using it before retrying. ${error}`);
+  }
+  const register = (currentPage) => stealthActorForPage(currentPage, profile, behavior);
+  for (const currentPage of persistentContext.pages()) register(currentPage);
+  persistentContext.on("page", register);
+  return {
+    context: persistentContext,
+    profile,
+    dataDir: paths.root,
+    pages: () => persistentContext.pages(),
+    newPage: () => persistentContext.newPage(),
+    forPage: (currentPage) => register(currentPage),
+    close: async () => { persistentContext.off("page", register); for (const currentPage of persistentContext.pages()) stealthActors.get(currentPage)?.stop(); await persistentContext.close(); },
+  };
+};
+
+var ensureWebBrowser = async function () {
+  if (context && !context.browser()?.isConnected()) resetWebHandles();
+  if (!context) {
+    stealth = undefined;
+    stealth ??= await launchStealthChromium({ chromium, headless: HEADLESS, dataDir: webProfileDir, contextOptions: { viewport: null } });
+    context = stealth.context;
+    browser = context.browser();
+  }
+  return context;
+};
+var ensureMobileBrowser = async function () {
+  if (mobileContext && !mobileContext.browser()?.isConnected()) {
+    mobileContext = undefined;
+    mobilePage = undefined;
+    mobileStealth = undefined;
+  }
+  if (!mobileContext) {
+    mobileStealth = undefined;
+    mobileStealth ??= await launchStealthChromium({ chromium, headless: HEADLESS, dataDir: mobileProfileDir, contextOptions: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } });
+    mobileContext = mobileStealth.context;
+  }
+  return mobileContext;
+};
+```
+
+The default desktop bootstrap uses the persistent context and managed actor:
+
+```js
+var TARGET_URL = "http://127.0.0.1:3000";
+
+if (page?.isClosed()) page = undefined;
+await ensureWebBrowser();
+page ??= context.pages()[0] || await context.newPage();
+human = stealth.forPage(page);
+page.setDefaultTimeout(10000);
+page.setDefaultNavigationTimeout(30000);
+await page.goto(TARGET_URL, { waitUntil: "domcontentloaded" });
+console.log("Loaded:", await page.title(), "profile:", stealth.profile.profileId);
+```
+
+`ensureWebBrowser()` is the only supported Chromium web launch path in this skill. It provides the persistent profile, page actor registration and idle coordinator automatically.
 
 If a handle is stale, set it to `undefined` and rerun the focused setup cell. Keep cells short. Use `timeout_ms` above 30000 only for operations that genuinely need it; the maximum is 300000. Timeout or cancellation kills the kernel and invalidates every handle.
 
@@ -152,7 +486,8 @@ var TARGET_URL = "http://127.0.0.1:3000";
 
 if (page?.isClosed()) page = undefined;
 await ensureWebBrowser();
-page ??= await context.newPage();
+page ??= context.pages()[0] || await context.newPage();
+human = stealth.forPage(page);
 page.setDefaultTimeout(10000);
 page.setDefaultNavigationTimeout(30000);
 await page.goto(TARGET_URL, { waitUntil: "domcontentloaded" });
@@ -168,7 +503,8 @@ var MOBILE_TARGET_URL = typeof TARGET_URL === "string"
 
 if (mobilePage?.isClosed()) mobilePage = undefined;
 await ensureMobileBrowser();
-mobilePage ??= await mobileContext.newPage();
+mobilePage ??= mobileContext.pages()[0] || await mobileContext.newPage();
+mobileHuman = mobileStealth.forPage(mobilePage);
 mobilePage.setDefaultTimeout(10000);
 mobilePage.setDefaultNavigationTimeout(30000);
 await mobilePage.goto(MOBILE_TARGET_URL, { waitUntil: "domcontentloaded" });
@@ -179,13 +515,15 @@ Native-window pass:
 
 ```js
 await page?.close().catch(() => {});
-await context?.close().catch(() => {});
+await stealth?.close().catch(() => {});
 browser = undefined;
 page = undefined;
 context = undefined;
+stealth = undefined;
 
 await ensureWebBrowser();
-page = await context.newPage();
+page = context.pages()[0] || await context.newPage();
+human = stealth.forPage(page);
 await page.goto(TARGET_URL, { waitUntil: "domcontentloaded" });
 console.log("Loaded native window:", await page.title());
 ```
@@ -218,6 +556,10 @@ Reload rules:
 - Web renderer change: `await reloadWebContexts()`.
 - Electron renderer-only change: `await appWindow.reload({ waitUntil: "domcontentloaded" })`.
 - Electron main-process, preload, startup, or process-ownership change: close and relaunch Electron.
+
+The default desktop and mobile web sessions use persistent Chromium contexts. Leave `webProfileDir` and `mobileProfileDir` unset to use the shared installation profile and behavioral identity. Only one of those contexts can use the shared profile at a time because Chromium locks its user-data directory. Close the first session before switching modes. Set a deliberate separate data directory only when isolated browser identities are required.
+
+Use `human = stealth.forPage(page)` or `mobileHuman = mobileStealth.forPage(mobilePage)` for managed pointer and keyboard behavior. Direct locator actions remain available for ordinary QA but bypass the behavioral actor.
 
 ```js
 await electronApp.close().catch(() => {});
@@ -384,23 +726,24 @@ Run cleanup before reset, before ending the task, and before quitting OpenCode. 
 
 ```js
 if (electronApp) await electronApp.close().catch(() => {});
-if (mobileContext) await mobileContext.close().catch(() => {});
-if (context) await context.close().catch(() => {});
-if (browser) await browser.close().catch(() => {});
+if (mobileStealth) await mobileStealth.close().catch(() => {});
+if (stealth) await stealth.close().catch(() => {});
 
 browser = undefined;
 context = undefined;
 page = undefined;
 mobileContext = undefined;
 mobilePage = undefined;
+mobileStealth = undefined;
+mobileHuman = undefined;
+stealth = undefined;
+human = undefined;
 electronApp = undefined;
 appWindow = undefined;
-webProfileDir = undefined;
-mobileProfileDir = undefined;
 console.log("Playwright session closed");
 ```
 
-Wait for `Playwright session closed` before invoking `js_repl_reset` or exiting. `js_repl` deletes the session directory and its browser profiles when the session ends.
+Wait for `Playwright session closed` before invoking `js_repl_reset` or exiting. The shared Chromium profile remains on disk intentionally, while the active context and its idle timers are closed.
 
 ## Signoff
 
