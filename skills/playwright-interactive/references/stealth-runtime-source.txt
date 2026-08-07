@@ -301,13 +301,36 @@ var stealthTargetBox = async (page, target) => {
     await target.scrollIntoViewIfNeeded();
     const box = await target.boundingBox();
     if (!box || box.width <= 0 || box.height <= 0) throw new Error("Stealth target is not visible");
-    const unobscured = await target.evaluate((element) => {
+    const candidates = [
+      { x: 0.5, y: 0.5 },
+      { x: 0.25, y: 0.5 },
+      { x: 0.75, y: 0.5 },
+      { x: 0.5, y: 0.25 },
+      { x: 0.5, y: 0.75 },
+      ...Array.from({ length: 12 }, () => ({
+        x: stealthClamp(0.5 + stealthNormal() * 0.2, 0.1, 0.9),
+        y: stealthClamp(0.5 + stealthNormal() * 0.2, 0.1, 0.9),
+      })),
+    ];
+    const clickable = await target.evaluate((element, points) => {
       const rect = element.getBoundingClientRect();
-      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      return !top || top === element || element.contains(top);
-    }).catch(() => true);
-    if (!unobscured) throw new Error("Stealth target is obscured");
-    return box;
+      const targetLink = element.closest?.("a[href]");
+      return points.filter((point) => {
+        const top = document.elementFromPoint(rect.left + rect.width * point.x, rect.top + rect.height * point.y);
+        if (!top) return false;
+        if (top === element || element.contains(top)) return true;
+        const topLink = top.closest?.("a[href]");
+        return Boolean(targetLink && topLink && targetLink.href === topLink.href);
+      });
+    }, candidates).catch(() => []);
+    if (!clickable.length) throw new Error("Stealth target is obscured");
+    return {
+      ...box,
+      stealthPoints: clickable.map((point) => ({
+        x: box.x + box.width * point.x,
+        y: box.y + box.height * point.y,
+      })),
+    };
   }
   if (target && Number.isFinite(target.x) && Number.isFinite(target.y)) return { x: target.x, y: target.y, width: 1, height: 1 };
   throw new TypeError("Stealth target must be a Locator or { x, y }");
@@ -317,10 +340,13 @@ var stealthViewport = async (page) => {
   if (viewport) return viewport;
   return page.evaluate(() => ({ width: window.innerWidth || 960, height: window.innerHeight || 540 })).catch(() => ({ width: 960, height: 540 }));
 };
-var stealthPoint = (box, profile) => ({
-  x: box.width <= 1 ? box.x : stealthClamp(box.x + box.width / 2 + stealthNormal() * profile.clickPrecision, box.x + 1, box.x + Math.max(1, box.width - 1)),
-  y: box.height <= 1 ? box.y : stealthClamp(box.y + box.height / 2 + stealthNormal() * profile.clickPrecision, box.y + 1, box.y + Math.max(1, box.height - 1)),
-});
+var stealthPoint = (box, profile) => {
+  if (box.stealthPoints?.length) return box.stealthPoints[Math.floor(Math.random() * box.stealthPoints.length)];
+  return {
+    x: box.width <= 1 ? box.x : stealthClamp(box.x + box.width / 2 + stealthNormal() * profile.clickPrecision, box.x + 1, box.x + Math.max(1, box.width - 1)),
+    y: box.height <= 1 ? box.y : stealthClamp(box.y + box.height / 2 + stealthNormal() * profile.clickPrecision, box.y + 1, box.y + Math.max(1, box.height - 1)),
+  };
+};
 var stealthPath = (from, to, profile) => {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
@@ -728,8 +754,9 @@ var createStealthController = async ({ chromium, headless = HEADLESS, dataDir, l
         const tremorCount = stealthClamp(Math.round(stealthUniform(2, profile.tremorCount + 1)), 2, 5);
         for (let index = 0; index < tremorCount; index += 1) { await currentPage.mouse.move(point.x + stealthUniform(-profile.tremorAmplitude, profile.tremorAmplitude), point.y + stealthUniform(-profile.tremorAmplitude, profile.tremorAmplitude)); await stealthSleep(stealthUniform(15, 45)); }
         await currentPage.mouse.move(point.x, point.y);
-        await currentPage.mouse.down({ button: options.button || "left" });
-        try { await stealthSleep(stealthUniform(profile.clickHoldMin, profile.clickHoldMax)); } finally { await currentPage.mouse.up({ button: options.button || "left" }); }
+        const clickCount = count === 2 ? clickIndex + 1 : 1;
+        await currentPage.mouse.down({ button: options.button || "left", clickCount });
+        try { await stealthSleep(stealthUniform(profile.clickHoldMin, profile.clickHoldMax)); } finally { await currentPage.mouse.up({ button: options.button || "left", clickCount }); }
         if (count === 2) await stealthSleep(stealthUniform(60, 140));
       }
     });
