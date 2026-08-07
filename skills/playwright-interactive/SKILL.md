@@ -100,6 +100,40 @@ console.log("Loaded:", await page.title());
 
 Do not navigate during startup merely to prove that the browser opened. The startup capability result is sufficient.
 
+## Tabs And Navigation
+
+A click may navigate the current page, open a new tab or popup, or leave navigation unchanged. The agent **MUST NOT** assume which outcome occurred. For any click that may navigate, snapshot the managed pages and current URL, perform the click, then resolve the observed outcome:
+
+```js
+var pageBeforeClick = page;
+var urlBeforeClick = page.url();
+var pagesBeforeClick = new Set(stealth.pages());
+await stealth.click(page, navigationLocator);
+
+var openedPages = [];
+var navigationDeadline = Date.now() + 1500;
+while (Date.now() < navigationDeadline) {
+  openedPages = stealth.pages().filter((candidate) => !pagesBeforeClick.has(candidate));
+  if (openedPages.length || (!pageBeforeClick.isClosed() && pageBeforeClick.url() !== urlBeforeClick)) break;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
+var navigationKind = openedPages.length
+  ? "new-page"
+  : (!pageBeforeClick.isClosed() && pageBeforeClick.url() !== urlBeforeClick)
+    ? "same-page"
+    : "no-navigation";
+
+if (openedPages.length === 1) page = openedPages[0];
+else page = pageBeforeClick;
+if (navigationKind !== "no-navigation" && !page.isClosed()) {
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+}
+console.log("Click outcome:", navigationKind, "pages:", stealth.pages().map((candidate) => candidate.url()));
+```
+
+New tabs and popups are registered automatically by the controller. After a navigation-capable click, the agent **MUST** update the shared `page` handle when one new page opened and **MUST** inspect `stealth.pages()` when multiple pages opened or the observed UI is not on the expected page. It **MUST NOT** keep querying the original tab merely because that handle still exists. A new tab is possible, not guaranteed; do not require one unless the application behavior requires it.
+
 ## Stuck Or Guessing
 
 If the agent cannot confidently identify the current UI state or the correct interaction target, it **MUST** stop guessing and inspect a screenshot. This rule applies immediately after any one of these conditions:
@@ -107,6 +141,18 @@ If the agent cannot confidently identify the current UI state or the correct int
 - One locator or managed action fails because the expected element is missing, ambiguous, obscured, or timed out.
 - One DOM inspection pass does not clearly establish what to interact with next.
 - The page differs from the expected state, or the agent is considering speculative selectors, repeated scripts, broad `evaluate()` calls, or source inspection to infer what is visible.
+
+If the unexpected state followed a click, first list the open managed pages and their URLs because the destination may be in another tab:
+
+```js
+console.log(stealth.pages().map((candidate, index) => ({
+  index,
+  url: candidate.url(),
+  closed: candidate.isClosed(),
+})));
+```
+
+Select the page containing the expected destination before taking the required screenshot. Do not screenshot and debug a stale opener tab when the click opened a new managed page.
 
 Before running another inspection script or attempting another locator, capture the current viewport and emit it:
 
