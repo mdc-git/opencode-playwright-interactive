@@ -12,14 +12,14 @@ Compared with one-shot shell commands, ad hoc Node scripts, or a fresh browser l
 
 The Playwright skill turns that persistent runtime into an interactive QA loop for browser and Electron applications. It supports targeted inspection, repeatable interactions, screenshots, and follow-up assertions without adding Playwright dependencies or browser binaries to each application workspace. The shared, managed runtime also avoids setup drift between projects while leaving each REPL session isolated.
 
-Chromium web sessions use the skill's inline default stealth bootstrap. It keeps one persistent Chromium profile and one installation-wide behavioral identity, registers every page and popup in the managed context and shapes actions made through the documented human actor. This is intended for authorized testing of sites you control, not as a guarantee of undetectability or protection bypass.
+Chromium web sessions use the skill's managed stealth runtime. One short `js_repl` startup snippet imports the runtime, opens its persistent context, and verifies its required capabilities. It keeps one persistent Chromium profile and one installation-wide behavioral identity, automatically registers every page and popup, and exposes behavior-sensitive session methods such as `await stealth.click(page, locator)`. This is intended for authorized testing of sites you control, not as a guarantee of undetectability or protection bypass.
 
 ## Install
 
-Copy both directories into an OpenCode project's `.opencode/` directory:
+Copy both directories into the global OpenCode configuration directory. The skill's canonical startup snippet resolves its runtime from this location:
 
 ```text
-.opencode/
+~/.config/opencode/
   tools/
     js_repl.ts
     LICENSE.txt
@@ -29,9 +29,13 @@ Copy both directories into an OpenCode project's `.opencode/` directory:
       SKILL.md
       LICENSE.txt
       NOTICE.txt
+      scripts/
+        stealth-runtime.mjs
+      references/
+        stealth-runtime-source.txt
 ```
 
-No project package manifest or workspace install step is required. On first use, `js_repl` installs its pinned Meriyah parser in `~/.cache/opencode`; later sessions reuse it. Fully quit and restart OpenCode after copying or changing a tool or skill.
+Do not copy only `SKILL.md`; the complete skill directory, including `scripts/` and `references/`, is required. This follows the Agent Skills directory conventions: executable code is in `scripts/`, and supporting runtime source is in `references/`. No project package manifest or workspace install step is required. On first use, `js_repl` installs its pinned Meriyah parser in `~/.cache/opencode`; later sessions reuse it. Fully quit and restart OpenCode after copying or changing a tool or skill.
 
 ## Requirements
 
@@ -69,9 +73,9 @@ Explicitly close browser resources before resetting the REPL or ending a browser
 
 `skills/playwright-interactive/` provides persistent browser and Electron QA instructions. Before first use, call `js_repl_playwright_setup`; it installs Playwright 1.62.0 and Chromium under `~/.cache/opencode/playwright` by default, rather than modifying each application workspace. The REPL automatically resolves the shared library and browser path thereafter. Set `OPENCODE_PLAYWRIGHT_CACHE_DIR` to relocate the managed cache, `OPENCODE_PLAYWRIGHT_NPM_PATH` or `OPENCODE_PLAYWRIGHT_NPX_PATH` to select package executables, and `PLAYWRIGHT_BROWSERS_PATH` to reuse an existing browser cache.
 
-By default, the skill launches Chromium with `launchPersistentContext()` and stores browser data plus `behavior.json` under `~/.local/share/opencode/playwright-interactive/stealth/`. The behavioral parameters persist across sessions while event randomness is fresh. Chromium's user-data directory is exclusive, so desktop and mobile web contexts must use the default profile sequentially. The inline bootstrap uses standard Playwright mouse and keyboard APIs, supports Bezier movement, probabilistic overshoot, tremor, click hold, per-key timing and idle drift and does not add another tool or runtime file.
+By default, the skill launches Chromium with `launchPersistentContext()` and stores browser data, `behavior.json`, `persona.json`, and `profile.json` under `~/.local/share/opencode/playwright-interactive/stealth/`. Behavioral parameters and the host-derived locale/timezone persona persist across sessions while event randomness is fresh. The dedicated Chromium user-data directory is exclusive, so desktop and mobile web contexts using the shared profile must run sequentially. Mobile is an explicit viewport/touch override of that shared identity. `resetProfile()` closes the session, deletes the dedicated identity, and does not relaunch; the next `ensureWebBrowser()` or `ensureMobileBrowser()` creates it on demand.
 
-Use `ensureWebBrowser()` for every Chromium web session. It is the only web launch path documented by the skill and always creates the persistent managed context. Use the managed actor for behavior-sensitive input, for example `human.click(locator)` and `human.type(locator, "text")`. Direct `locator.click()`, `fill()`, `pressSequentially()`, direct mouse calls and DOM assignment bypass that shaping. Playwright 1.62.0 still enables `Runtime.enable` as part of normal operation; this feature does not suppress or intercept it. Electron is unchanged.
+Use `ensureWebBrowser()` or `ensureMobileBrowser()` for every Chromium web session. Each returns a session controller with explicit-page methods including `click`, `doubleClick`, `hover`, `wheel`, `scroll`, `dragTo`, `type`, `fill`, `press`, `focus`, `check`, `uncheck`, `selectOption`, `tap`, `screenshot`, and `stop`. Existing pages, new pages, and popups are registered automatically. If one failed action or inspection pass leaves the next target unclear, the skill requires an immediate viewport screenshot through the controller and `opencode.emitImage()` before further guessing or scripting. Frames are tracked through normal Playwright lifecycle events; dedicated workers and service workers are observed only, and no inert init script is installed. Direct `locator.*`, `page.mouse`, `page.keyboard`, `page.touchscreen`, `evaluate()` mutation, and DOM assignment remain valid ordinary Playwright but are unmanaged because public Playwright provides no transparent interception layer. Playwright 1.62.0 still enables `Runtime.enable` as part of normal operation; this feature is not suppressed or intercepted. Electron is unchanged.
 
 ## Configuration
 
