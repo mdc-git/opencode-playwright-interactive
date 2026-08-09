@@ -14,14 +14,14 @@ Use persistent `js_repl` browser handles for iterative browser and Electron QA.
 
 ## Required Chromium Startup
 
-The words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, and **SHALL NOT** in this section are interpreted as described in RFC 2119.
+The words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** throughout this skill are interpreted as described in RFC 2119.
 
 For every request to open or use Chromium, the agent **MUST** perform exactly these two tool calls first:
 
 1. Call `js_repl_playwright_setup`.
 2. Send the complete JavaScript block below directly to `js_repl` as one call.
 
-There are no other Chromium initialization steps. The agent **MUST NOT** read, grep, extract, copy, reconstruct, evaluate, or inspect `SKILL.md`, `scripts/stealth-runtime.mjs`, `references/stealth-runtime-source.txt`, or saved tool output before startup. The agent **MUST NOT** use `eval`, `new Function`, `vm`, a subagent, a wrapper, a factory, or a replacement launcher. The agent **MUST NOT** call `chromium.launch()`, call `chromium.launchPersistentContext()` directly, create a non-managed context, or define another `ensureWebBrowser`.
+There are no other Chromium initialization steps. The agent **MUST NOT** read, grep, extract, copy, reconstruct, evaluate, or inspect `SKILL.md`, `scripts/stealth-runtime.mjs`, or saved tool output before startup. The agent **MUST NOT** use `eval`, `new Function`, `vm`, a subagent, a wrapper, a factory, or a replacement launcher. The agent **MUST NOT** call `chromium.launch()`, call `chromium.launchPersistentContext()` directly, create a non-managed context, or define another `ensureWebBrowser`.
 
 This is the complete and only desktop startup code:
 
@@ -30,19 +30,24 @@ var playwright = await import("playwright");
 var chromium = playwright.chromium;
 var electronLauncher = playwright._electron;
 var path = await import("node:path");
+var fs = await import("node:fs/promises");
 var { pathToFileURL } = await import("node:url");
 var HEADLESS = false;
 var webProfileDir;
 var mobileProfileDir;
-var stealthRuntimePath = path.join(
-  opencode.homeDir,
-  ".config",
-  "opencode",
-  "skills",
-  "playwright-interactive",
-  "scripts",
-  "stealth-runtime.mjs",
-);
+var stealthRuntimeCandidates = [
+  path.join(opencode.cwd, ".opencode", "skills", "playwright-interactive", "scripts", "stealth-runtime.mjs"),
+  path.join(opencode.homeDir, ".config", "opencode", "skills", "playwright-interactive", "scripts", "stealth-runtime.mjs"),
+];
+var stealthRuntimePath;
+for (var candidate of stealthRuntimeCandidates) {
+  try {
+    await fs.access(candidate);
+    stealthRuntimePath = candidate;
+    break;
+  } catch {}
+}
+if (!stealthRuntimePath) throw new Error("Could not locate the playwright-interactive stealth runtime");
 var { installStealthRuntime } = await import(pathToFileURL(stealthRuntimePath).href);
 var stealthRuntime = await installStealthRuntime({
   chromium,
@@ -263,7 +268,7 @@ Because such controls are often the dismiss button of a frame-hosted banner, dia
 
 ## The REPL Call Budget
 
-Each `js_repl` call is killed by a default length cap, and a killed call **hard-resets the kernel — destroying every live handle** (`playwright`, `stealth`, `page`) and forcing a full restart. Multi-step sequences (`click` page-timeout + `waitForTimeout(9000)` + networkidle) routinely blow the cap. To keep the session alive:
+Each `js_repl` call is killed by a default duration cap, and a killed call **hard-resets the kernel — destroying every live handle** (`playwright`, `stealth`, `page`) and forcing a full restart. Multi-step sequences (`click` page-timeout + `waitForTimeout(9000)` + networkidle) routinely blow the cap. To keep the session alive:
 
 - Set `timeout_ms` on every call that chains waits. A click’s default page timeout is 10s, so a single click+wait can consume 15–20s; two in one call often exceed 30s.
 - **Do not put successive waits in one call.** Split long flows across separate `js_repl` calls so none trips the cap.
@@ -379,4 +384,4 @@ Wait for `Playwright session closed` before resetting the REPL. Normal cleanup p
 
 ## Limits
 
-This workflow is for authorized testing of sites the user controls. It improves persistent identity, lifecycle consistency, and managed input behavior, but does not guarantee undetectability. Standard Playwright protocol/runtime signals and network, TLS, GPU, OS, profile-history, worker-realm, and long-horizon behavioral signals remain outside skill control.
+It improves persistent identity, lifecycle consistency, and managed input behavior, but does not guarantee undetectability. Standard Playwright protocol/runtime signals and network, TLS, GPU, OS, profile-history, worker-realm, and long-horizon behavioral signals remain outside skill control.

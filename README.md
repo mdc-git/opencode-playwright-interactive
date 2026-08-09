@@ -12,11 +12,11 @@ Compared with one-shot shell commands, ad hoc Node scripts, or a fresh browser l
 
 The Playwright skill turns that persistent runtime into an interactive QA loop for browser and Electron applications. It supports targeted inspection, repeatable interactions, screenshots, and follow-up assertions without adding Playwright dependencies or browser binaries to each application workspace. The shared, managed runtime also avoids setup drift between projects while leaving each REPL session isolated.
 
-Chromium web sessions use the skill's managed stealth runtime. One short `js_repl` startup snippet imports the runtime, opens its persistent context, and verifies its required capabilities. Each OpenCode session gets its own Chrome profile under its unique `opencode.tmpDir`, so multiple OpenCode sessions can run browsers simultaneously without conflict. The runtime automatically registers every page and popup, and exposes behavior-sensitive session methods such as `await stealth.click(page, locator)`. This is intended for authorized testing of sites you control, not as a guarantee of undetectability or protection bypass.
+Chromium web sessions use the skill's managed stealth runtime. One short `js_repl` startup snippet imports the runtime, opens its persistent context, and verifies its required capabilities. Each OpenCode session gets its own Chrome profile under its unique `opencode.tmpDir`, so multiple OpenCode sessions can run browsers simultaneously without conflict. The runtime automatically registers every page and popup, and exposes behavior-sensitive session methods such as `await stealth.click(page, locator)`. This is not a guarantee of undetectability or protection bypass.
 
 ## Install
 
-Copy both directories into the global OpenCode configuration directory. The skill's canonical startup snippet resolves its runtime from this location:
+Copy both directories into the global OpenCode configuration directory, or place the skill under `.opencode/skills/` for a project-local install. The startup snippet checks the project-local path before the global path:
 
 ```text
 ~/.config/opencode/
@@ -31,11 +31,9 @@ Copy both directories into the global OpenCode configuration directory. The skil
       NOTICE.txt
       scripts/
         stealth-runtime.mjs
-      references/
-        stealth-runtime-source.txt
 ```
 
-Do not copy only `SKILL.md`; the complete skill directory, including `scripts/` and `references/`, is required. This follows the Agent Skills directory conventions: executable code is in `scripts/`, and supporting runtime source is in `references/`. No project package manifest or workspace install step is required. On first use, `js_repl` installs its pinned Meriyah parser in `~/.cache/opencode`; later sessions reuse it. Fully quit and restart OpenCode after copying or changing a tool or skill.
+Do not copy only `SKILL.md`; the complete skill directory, including `scripts/`, is required. No project package manifest or workspace install step is required. On first use, `js_repl` installs its pinned Meriyah parser in `~/.cache/opencode`; later sessions reuse it. Fully quit and restart OpenCode after copying or changing a tool or skill.
 
 ## Requirements
 
