@@ -1,8 +1,8 @@
 ---
 name: playwright-interactive
-description: Persistent stealth Playwright browser and Electron QA through js_repl. Use when opening, debugging, testing, or visually inspecting local web apps, responsive interfaces, or Electron applications. Chromium must always start through the one managed stealth startup snippet in this skill.
+description: Persistent Playwright browser and Electron QA through js_repl, with standard Playwright for local apps and managed stealth for remote websites. Use when opening, debugging, testing, or visually inspecting local web apps, responsive interfaces, remote websites, or Electron applications.
 license: Apache-2.0
-compatibility: OpenCode with .opencode/tools/js_repl.ts and Node.js 22.22 or newer
+compatibility: OpenCode V2 with the js-repl plugin and Node.js 22.22 or newer
 metadata:
   source: openai/skills playwright-interactive
   adapted-for: opencode
@@ -12,21 +12,88 @@ metadata:
 
 Use persistent `js_repl` browser handles for iterative browser and Electron QA.
 
-## Required Chromium Startup
+## Required Startup Selection
 
 The words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** throughout this skill are interpreted as described in RFC 2119.
 
-For every request to open or use Chromium, the agent **MUST** perform exactly these two tool calls first:
+### Code Mode Routing
 
-1. Call `js_repl_playwright_setup`.
-2. Send the complete JavaScript block below directly to `js_repl` as one call.
+When `js_repl` is exposed inside the `execute` tool's Code Mode catalog, `execute` is only an orchestrator. Node.js source such as `import(...)`, `require(...)`, Playwright calls, and browser variables **MUST NOT** appear at the top level of `execute` code. Put all such source inside the `code` string passed to `tools.js_repl`.
 
-There are no other Chromium initialization steps. The agent **MUST NOT** read, grep, extract, copy, reconstruct, evaluate, or inspect `SKILL.md`, `scripts/stealth-runtime.mjs`, or saved tool output before startup. The agent **MUST NOT** use `eval`, `new Function`, `vm`, a subagent, a wrapper, a factory, or a replacement launcher. The agent **MUST NOT** call `chromium.launch()`, call `chromium.launchPersistentContext()` directly, create a non-managed context, or define another `ensureWebBrowser`.
-
-This is the complete and only desktop startup code:
+Call setup through `execute` with exactly this orchestration code:
 
 ```js
-var playwright = await import("playwright");
+return await tools.js_repl_playwright_setup({});
+```
+
+Every later REPL example in this skill is also a `tools.js_repl` payload. If an example is not already wrapped, call it through `execute` in this form:
+
+```js
+return await tools.js_repl({
+  code: `// REPL source goes here, including any import(...) expression`,
+  timeout_ms: 30000,
+});
+```
+
+The outer `code: ` template literal cannot contain an unescaped backtick. Before wrapping a REPL snippet, replace any inner template literal with string concatenation or encode the complete snippet as a quoted JSON string. The agent **MUST NOT** nest a REPL template literal such as `` `${value}` `` inside the outer Code Mode template literal; Code Mode will parse the inner backtick as the end of `code` and fail before `js_repl` runs.
+
+The agent **MUST NOT** send a REPL example directly as `execute` orchestration code. An `execute` error saying `ImportExpression is not supported` means this routing rule was violated; retry by moving the unchanged source into `tools.js_repl({ code: ... })`, not by rewriting or removing the import.
+
+For every browser or Electron request, the agent **MUST** run setup as above, then select exactly one startup mode before the first `tools.js_repl` call:
+
+- **Electron:** use Electron startup only. Do not launch Chromium or load the stealth runtime.
+- **Local web app:** use standard Chromium startup. A request to start, open, inspect, or test "the dev server" in the current workspace is local even before its port is known. A target is also local when the user identifies it as running on the local machine, or its URL uses `file:`, `localhost`, `*.localhost`, `127.0.0.0/8`, or `[::1]`. Do not load or use the stealth runtime.
+- **Remote website:** use managed stealth Chromium startup.
+
+If the target mode cannot be determined from the request, ask for the target URL or application type before startup. Do not start stealth and later switch a local target to standard mode.
+
+### Electron Startup
+
+Send this complete block as the first `execute` call after setup:
+
+```js
+return await tools.js_repl({
+  code: `var playwright = await import("playwright");
+var electronLauncher = playwright._electron;
+var ELECTRON_ENTRY = ".";
+var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] });
+var appWindow = await electronApp.firstWindow();
+appWindow.setDefaultTimeout(10000);
+console.log("Loaded Electron window:", await appWindow.title());`,
+  timeout_ms: 30000,
+});
+```
+
+Set `ELECTRON_ENTRY` to `.` when `package.json.main` is correct, or use a direct main-process path. Do not add Chromium setup to this block.
+
+### Standard Local Web Startup
+
+Send this complete block as the first `execute` call after setup:
+
+```js
+return await tools.js_repl({
+  code: `var playwright = await import("playwright");
+var chromium = playwright.chromium;
+var HEADLESS = false;
+var browser = await chromium.launch({ headless: HEADLESS });
+var context = await browser.newContext();
+var page = await context.newPage();
+console.log("Standard Chromium opened");`,
+  timeout_ms: 30000,
+});
+```
+
+Set `HEADLESS = true` only when the environment has no graphical display. Local mode uses ordinary Playwright locators, input, pages, contexts, screenshots, and lifecycle methods. The agent **MUST NOT** import `stealth-runtime.mjs`, create a stealth controller, use a stealth profile, or apply managed behavioral input in this mode.
+
+### Managed Remote Web Startup
+
+There are no alternative remote Chromium initialization steps. The agent **MUST NOT** read, grep, extract, copy, reconstruct, evaluate, or inspect `SKILL.md`, `scripts/stealth-runtime.mjs`, or saved tool output before startup. The agent **MUST NOT** use `eval`, `new Function`, `vm`, a subagent, a wrapper, a factory, or a replacement launcher. The agent **MUST NOT** call `chromium.launch()`, call `chromium.launchPersistentContext()` directly, create a non-managed context, or define another `ensureWebBrowser` for a remote target.
+
+Send this complete block as the first `execute` call after setup:
+
+```js
+return await tools.js_repl({
+  code: `var playwright = await import("playwright");
 var chromium = playwright.chromium;
 var electronLauncher = playwright._electron;
 var path = await import("node:path");
@@ -70,19 +137,35 @@ var stealthCapabilities = stealth.capabilities();
 if (
   stealthCapabilities.managedInput !== true ||
   stealthCapabilities.persistentIdentity !== true ||
-  stealthCapabilities.automaticPagesAndPopups !== true
+  stealthCapabilities.automaticPagesAndPopups !== true ||
+  stealthCapabilities.identity?.browserIdentity !== "native" ||
+  stealthCapabilities.identity?.userAgentOverride !== false ||
+  stealthCapabilities.identity?.automationControlledOverride !== false
 ) {
   await stealth.close().catch(() => {});
   throw new Error("Managed stealth capability verification failed");
 }
-console.log("Managed stealth browser opened", stealthCapabilities);
+console.log("Managed stealth browser opened", stealthCapabilities);`,
+  timeout_ms: 30000,
+});
 ```
 
-The agent **MUST NOT** split, shorten, rewrite, or precede this block with exploratory `js_repl` calls. `Managed stealth browser opened` is the only successful startup result. If setup or this block fails, the agent **MUST** stop and report the exact error without opening another browser or attempting an alternative.
+The agent **MUST NOT** split, shorten, rewrite, or precede the selected startup block with exploratory `js_repl` calls. In remote mode, `Managed stealth browser opened` is the only successful startup result. If setup or the selected block fails, the agent **MUST** stop and report the exact error without attempting another startup mode.
 
-Set `HEADLESS = true` only when the environment has no graphical display. Do not change any other startup line.
+For managed remote startup, set `HEADLESS = true` only when the environment has no graphical display. Do not change any other line in that block.
 
-## Chromium Rules
+## Standard Local Web Rules
+
+- Use ordinary Playwright APIs directly, such as `page.getByRole()`, `locator.click()`, `locator.fill()`, `page.mouse`, `page.keyboard`, `context.pages()`, and `context.newPage()`.
+- Use `page.screenshot()` for captures and `browser.close()` for cleanup.
+- Do not use any `stealth`, `mobileStealth`, `ensureWebBrowser`, or `ensureMobileBrowser` APIs.
+- Before every local-mode `tools.js_repl` call, inspect its `code` payload. If it contains a stealth-runtime identifier such as `stealth`, `mobileStealth`, `interactiveElements`, or `resolveVisible`, do not execute it; replace it with the ordinary Playwright equivalent.
+- For mobile-sized local QA, create a normal context with the required viewport and touch options rather than using the stealth mobile controller.
+- Never use a personal Chrome profile.
+
+## Managed Remote Web Rules
+
+The managed-controller sections from **Scrolling** through **Mobile** apply only to remote web mode. Standard local web and Electron mode must ignore all instructions in those sections that require `stealth`, controller-produced locators, managed input, or stealth screenshots.
 
 - Every Chromium page **MUST** belong to the controller returned by `ensureWebBrowser()` or `ensureMobileBrowser()`.
 - Use `stealth.newPage()` rather than `browser.newPage()`.
@@ -90,6 +173,33 @@ Set `HEADLESS = true` only when the environment has no graphical display. Do not
 - Direct locator, mouse, keyboard, touchscreen, and DOM mutation calls are ordinary unmanaged Playwright and do not receive behavioral shaping.
 - Each OpenCode session gets its own Chrome profile under its unique `opencode.tmpDir`, so multiple OpenCode sessions can run browsers simultaneously without conflict. Desktop and mobile within one session share that session's profile and must run sequentially.
 - Never use a personal Chrome profile.
+
+### Authorization And Bot Controls
+
+Managed remote mode improves interaction consistency; it does not authorize access or override a site's rules. The agent **MUST** stay within the user's authorized scope and the visible user flow.
+
+- The agent **MUST NOT** solve, outsource, bypass, suppress, or repeatedly probe a CAPTCHA, proof-of-work page, waiting room, rate limit, access denial, or bot challenge.
+- The agent **MUST NOT** reset the profile, switch desktop/mobile mode, change identity-critical launch settings, open parallel sessions, or retry an action to seek a different security decision.
+- An HTTP `403` or `429`, a challenge loop, an explicit automated-access denial, or a provider request to stop is a stop condition. Inspect the current state once, then report it without another attempt.
+- For a system the user owns or is explicitly authorized to test, prefer the provider's test keys or sandbox, a staging environment, or a narrowly scoped allowlist. Do not weaken production protection globally.
+- If an authorized flow requires a real interactive challenge, pause in headed mode and ask the user to complete it. Resume only after the user confirms completion; never inspect or reuse challenge tokens.
+- Keep retries bounded to ordinary transient application failures. A retry **MUST NOT** be used to search for a more favorable bot score or access decision.
+
+The runtime keeps the native Chromium user agent and automation state. It rejects caller-supplied identity-critical launch options, context options, HTTP headers, and Chromium arguments rather than combining contradictory browser, locale, viewport, device, or automation claims. Mobile mode is responsive touch emulation in Chromium, not Safari or physical-device impersonation. Managed input is task-bound: the runtime emits no ambient pointer movement while idle.
+
+### Diagnostics And Sensitive Artifacts
+
+Use `stealth.identity`, `stealth.capabilities()`, `stealth.telemetry()`, and `stealth.pageState(page)` for coarse diagnostics. They report browser/version policy, emulation mode, managed-action counts, navigation counts, popup counts, failures, and the most recent main-document status without collecting page fingerprints, URLs, interaction traces, or credentials.
+
+```js
+console.log({
+  identity: stealth.identity,
+  telemetry: stealth.telemetry(),
+  page: stealth.pageState(page),
+});
+```
+
+Traces, HAR files, video, screenshots, storage state, cookies, and challenge tokens may contain credentials or personal data. Capture only what the task requires, avoid recording secret-bearing states, do not print tokens or cookies, and keep emitted diagnostics coarse. The managed runtime leaves tracing, HAR, and video disabled by default.
 
 ## Navigate
 
@@ -103,11 +213,11 @@ await page.goto(TARGET_URL, { waitUntil: "domcontentloaded" });
 console.log("Loaded:", await page.title());
 ```
 
-Do not navigate during startup merely to prove that the browser opened. The startup capability result is sufficient.
+Do not navigate during startup merely to prove that the browser opened. The selected startup block's result is sufficient.
 
 ## Navigation Integrity
 
-`page.goto()` opens a site, not an application action. The agent **MUST NOT** use a deep link, query string, fragment, result URL, form endpoint, or guessed route to bypass the user-facing flow. It **MUST** navigate only to the requested site’s origin, then use the visible UI and managed input to complete the request. For example, to search Google, navigate to `https://www.google.com/`, inspect the page, fill the visible search field, and submit it; never navigate directly to `https://www.google.com/search?q=...`.
+`page.goto()` opens a site, not an application action. The agent **MUST NOT** use a deep link, query string, fragment, result URL, form endpoint, or guessed route to bypass the user-facing flow. It **MUST** navigate only to the requested site’s origin, then use the visible UI with the input API for the selected mode to complete the request. For example, to search Google, navigate to `https://www.google.com/`, inspect the page, fill the visible search field, and submit it; never navigate directly to `https://www.google.com/search?q=...`.
 
 The same rule applies after recovery and to local applications: use the application origin root, then reach every state through visible controls. A URL supplied verbatim by the user may be opened as requested, but its path, query, and fragment must not be invented, edited, or reused to shortcut an interaction.
 
@@ -115,9 +225,9 @@ The same rule applies after recovery and to local applications: use the applicat
 
 Before any browser interaction, the agent **MUST** decide whether the request can be answered from the current document DOM/source. An interaction includes navigation, clicking, filling, pressing, hovering, dragging, tapping, scrolling, or any other input. If the needed information is already present in the current DOM/source, the agent **MUST** inspect it and answer directly without interacting. Text outside the viewport or a scroll container can still already be present in the DOM; it is not evidence that scrolling or clicking is required.
 
-Use locator-scoped DOM inspection or `evaluate` only to read the current page state; neither may mutate the page or trigger application behavior. This is the lowest-impact and most stealth-preserving path for information-only requests. It does not relax the cross-frame controller rules for finding controls.
+Use locator-scoped DOM inspection or `evaluate` only to read the current page state; neither may mutate the page or trigger application behavior. For remote mode, this does not relax the cross-frame controller rules for finding controls.
 
-If the information is not present, or the user asks to change application state, use the smallest necessary visible UI flow through managed input. Do not substitute a deep link, a constructed URL, or any other shortcut for that interaction.
+If the information is not present, or the user asks to change application state, use the smallest necessary visible UI flow. Use managed input in remote mode and ordinary Playwright input in local mode. Do not substitute a deep link, a constructed URL, or any other shortcut for that interaction.
 
 ## Scrolling
 
@@ -244,7 +354,7 @@ When the exact element is unknown, take one snapshot of all visible interactive 
 ```js
 var interactive = await stealth.interactiveElements(page);
 console.log(interactive.map((entry, index) =>
-  `${index} frame=${entry.frameIndex} ${entry.role || entry.tag} ${JSON.stringify(entry.name)} disabled=${entry.disabled}`
+  index + " frame=" + entry.frameIndex + " " + (entry.role || entry.tag) + " " + JSON.stringify(entry.name) + " disabled=" + entry.disabled
 ).join("\n"));
 ```
 
@@ -341,6 +451,8 @@ Available methods include `resolveVisible`, `interactiveElements`, `moveTo`, `cl
 
 ## Mobile
 
+Managed mobile mode is a Chromium responsive-touch cohort with a 390x844 viewport, matching screen dimensions, and device scale factor 3. It deliberately retains Chromium's native version-coherent user agent instead of claiming to be iPhone Safari.
+
 Close desktop first when using the session profile, then use the existing runtime:
 
 ```js
@@ -353,22 +465,22 @@ console.log("Managed mobile stealth browser opened", mobileStealth.capabilities(
 
 Use `mobileStealth.tap(mobilePage, locator)` for managed touch input.
 
+The remaining sections apply to every selected mode unless stated otherwise.
+
 ## Reload
 
-Reuse the current controller and pages across iterations:
+Reuse the current page across iterations:
 
 ```js
-for (var currentPage of stealth.pages()) {
-  await currentPage.reload({ waitUntil: "domcontentloaded" });
-}
+await page.reload({ waitUntil: "domcontentloaded" });
 ```
 
 Do not rerun startup after ordinary application changes. Rerun it only after `js_repl_reset`, kernel termination, or a new OpenCode session.
 
 ## Functional QA
 
-- Inventory the user requirements, visible controls, state transitions, and claims after Chromium startup.
-- Exercise every relevant control with managed input.
+- Inventory the user requirements, visible controls, state transitions, and claims after application startup.
+- Exercise every relevant control with the input API for the selected mode.
 - Verify one end-to-end critical flow and its visible result.
 - Verify toggles and reversible controls in initial, changed, and restored states.
 - Use `evaluate` for inspection only; it does not count as signoff input.
@@ -382,7 +494,7 @@ Do not rerun startup after ordinary application changes. Rerun it only after `js
 - Prefer viewport screenshots and use full-page captures only as secondary evidence.
 
 ```js
-var screenshotBytes = await stealth.screenshot(page, {
+var screenshotBytes = await page.screenshot({
   type: "jpeg",
   quality: 85,
   scale: "css",
@@ -394,17 +506,11 @@ await opencode.emitImage({
 });
 ```
 
+Use `appWindow.screenshot()` instead in Electron mode.
+
 ## Electron
 
-Electron remains separate from Chromium stealth. Set `ELECTRON_ENTRY` to `.` when `package.json.main` is correct, or use a direct main-process path.
-
-```js
-var ELECTRON_ENTRY = ".";
-var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] });
-var appWindow = await electronApp.firstWindow();
-appWindow.setDefaultTimeout(10000);
-console.log("Loaded Electron window:", await appWindow.title());
-```
+Electron is always separate from Chromium stealth and uses the Electron startup block. Use ordinary Playwright APIs against `appWindow`.
 
 Do not create scratch pages from an Electron context. Reload renderer-only changes with `appWindow.reload()` and relaunch for main-process, preload, startup, or process-ownership changes.
 
@@ -413,14 +519,15 @@ Do not create scratch pages from an Electron context. Reload renderer-only chang
 Always close resources before `js_repl_reset`, ending the task, or quitting OpenCode:
 
 ```js
-if (electronApp) await electronApp.close().catch(() => {});
-if (mobileStealth) await mobileStealth.close().catch(() => {});
-if (stealth) await stealth.close().catch(() => {});
+if (typeof electronApp !== "undefined") await electronApp.close().catch(() => {});
+if (typeof mobileStealth !== "undefined") await mobileStealth.close().catch(() => {});
+if (typeof stealth !== "undefined") await stealth.close().catch(() => {});
+if (typeof stealth === "undefined" && typeof browser !== "undefined") await browser.close().catch(() => {});
 console.log("Playwright session closed");
 ```
 
-Wait for `Playwright session closed` before resetting the REPL. Normal cleanup preserves the session profile. `await stealth.resetProfile()` is destructive: it closes the session and deletes the complete dedicated identity without relaunching.
+Wait for `Playwright session closed` before resetting the REPL. Normal remote-mode cleanup preserves the stealth session profile. `await stealth.resetProfile()` is destructive: it closes the remote session and deletes its complete dedicated identity without relaunching.
 
-## Limits
+## Remote Stealth Limits
 
-It improves persistent identity, lifecycle consistency, and managed input behavior, but does not guarantee undetectability. Standard Playwright protocol/runtime signals and network, TLS, GPU, OS, profile-history, worker-realm, and long-horizon behavioral signals remain outside skill control.
+It improves persistent identity, lifecycle consistency, task-bound managed input, and identity coherence, but does not guarantee undetectability. It intentionally does not patch CDP, alter Chromium's native automation disclosure, spoof another browser, generate ambient input, rotate network identity, or manipulate challenge systems. Standard Playwright protocol/runtime signals and network, TLS, GPU, OS, profile-history, worker-realm, and long-horizon behavioral signals remain outside skill control.

@@ -1,25 +1,36 @@
 # OpenCode JavaScript REPL
 
-Persistent, interactive browser and Electron QA for OpenCode, powered by a JavaScript REPL and Playwright.
+A persistent JavaScript REPL and Playwright workflow for browser and Electron
+QA in OpenCode.
 
-
-
+<!-- markdownlint-disable-next-line MD033 -->
 <video controls src="https://github.com/user-attachments/assets/b015fe51-692f-475b-a8ac-a772695db35e"></video>
 
-## Advantages
+## Why use it
 
-Compared with one-shot shell commands, ad hoc Node scripts, or a fresh browser launch for every check, `js_repl` keeps JavaScript bindings, imports, and browser objects alive for the current OpenCode session. This makes iterative debugging faster: inspect a page, change the application, query the same page again, and retain the variables and helpers built along the way.
+`js_repl` keeps bindings, imports and browser objects alive for the current
+OpenCode session. Inspect a page, change the application and query the same
+page again without rebuilding the script or reopening the browser.
 
-The Playwright skill turns that persistent runtime into an interactive QA loop for browser and Electron applications. It supports targeted inspection, repeatable interactions, screenshots, and follow-up assertions without adding Playwright dependencies or browser binaries to each application workspace. The shared, managed runtime also avoids setup drift between projects while leaving each REPL session isolated.
+The Playwright skill adds instructions for repeatable interactions,
+screenshots and follow-up checks. Playwright and Chromium live in a shared
+user cache, so they do not need to be installed in every application.
 
-Chromium web sessions use the skill's managed stealth runtime. One short `js_repl` startup snippet imports the runtime, opens its persistent context, and verifies its required capabilities. Each OpenCode session gets its own Chrome profile under its unique `opencode.tmpDir`, so multiple OpenCode sessions can run browsers simultaneously without conflict. The runtime automatically registers every page and popup, and exposes behavior-sensitive session methods such as `await stealth.click(page, locator)`. This is not a guarantee of undetectability or protection bypass.
+Local web apps use standard Playwright Chromium, and Electron uses Playwright's
+normal Electron launcher. Remote websites run through the skill's managed
+stealth runtime, which includes a session profile and managed input methods
+such as `await stealth.click(page, locator)`. It does not guarantee that a site
+cannot detect automation.
 
 ## Install
 
-Copy both directories into the global OpenCode configuration directory, or place the skill under `.opencode/skills/` for a project-local install. The startup snippet checks the project-local path before the global path:
+This project uses the OpenCode V2 plugin API. Copy `plugins/`, `tools/` and
+`skills/` together into the global OpenCode config directory:
 
 ```text
 ~/.config/opencode/
+  plugins/
+    js-repl.ts
   tools/
     js_repl.ts
     LICENSE.txt
@@ -33,22 +44,74 @@ Copy both directories into the global OpenCode configuration directory, or place
         stealth-runtime.mjs
 ```
 
-Do not copy only `SKILL.md`; the complete skill directory, including `scripts/`, is required. No project package manifest or workspace install step is required. On first use, `js_repl` installs its pinned Meriyah parser in `~/.cache/opencode`; later sessions reuse it. Fully quit and restart OpenCode after copying or changing a tool or skill.
+For a project-only install, put the same directories under
+`<project>/.opencode/`. Keep the full skill directory. The startup code needs
+`scripts/stealth-runtime.mjs`, not only `SKILL.md`.
+
+Install the V2 plugin package in the same config directory:
+
+```sh
+# Global install
+npm install --prefix ~/.config/opencode @opencode-ai/plugin@next
+
+# Project-only install
+npm install --prefix .opencode @opencode-ai/plugin@next
+```
+
+OpenCode discovers plugins in `.opencode/plugins/` and
+`~/.config/opencode/plugins/` automatically. No `plugins` config entry is
+needed for this layout. Check that the plugin loaded with:
+
+```sh
+opencode2 api get /api/plugin
+```
+
+The returned list should contain `local.js-repl`.
+
+On its first run, `js_repl` installs Meriyah in `~/.cache/opencode`. Later
+sessions reuse that installation. OpenCode reloads discovered plugin and
+config files when they change. After updating `@opencode-ai/plugin` or another
+dependency, restart the service:
+
+```sh
+opencode2 service restart
+```
 
 ## Requirements
 
-- OpenCode with native custom-tool support
+- OpenCode V2
 - Node.js 22.22.0 or newer on `PATH`
+- npm and npx on `PATH`, unless custom executable paths are configured
 
 ## Tools
 
-`tools/js_repl.ts` exports three native tools:
+The `local.js-repl` plugin registers these tools:
 
-- `js_repl`: execute plain JavaScript in a persistent, session-isolated Node.js kernel.
-- `js_repl_reset`: clear the current session's bindings and terminate its kernel.
-- `js_repl_playwright_setup`: install the shared Playwright runtime and Chromium once in the local user cache.
+- `js_repl` runs JavaScript in a persistent Node.js kernel.
+- `js_repl_reset` clears the current session's bindings and stops its kernel.
+- `js_repl_playwright_setup` installs Playwright and Chromium in the user
+  cache.
 
-`js_repl` accepts `code` and optional `timeout_ms` (1 to 300000 milliseconds; default 30000). Send JavaScript directly, without Markdown fences.
+`js_repl` accepts `code` and an optional `timeout_ms` from 1 to 300000. The
+default is 30000 milliseconds. Send plain JavaScript without Markdown fences.
+
+When OpenCode exposes the tool through Code Mode, `execute` only accepts
+orchestration syntax. Keep imports and all other Node.js source inside the
+`code` string passed to `tools.js_repl`:
+
+```js
+return await tools.js_repl({
+  code: `var path = await import("node:path");
+console.log(path.basename("/tmp/example"));`,
+});
+```
+
+Sending the `import(...)` expression directly to `execute` produces an
+`ImportExpression is not supported` error before `js_repl` is called.
+Likewise, do not put an unescaped REPL template literal inside the outer
+`` code: `...` `` wrapper. Use string concatenation in the REPL source or pass
+the source as a quoted JSON string so an inner backtick cannot terminate the
+outer wrapper.
 
 ```js
 // First call
@@ -61,41 +124,142 @@ counter += 1
 console.log(counter)
 ```
 
-Top-level `const`, `let`, `var`, function, class, and static-import bindings persist between calls. `require(...)` resolves from the workspace, while static and dynamic imports support Node builtins, installed workspace packages, and local ESM `.js`/`.mjs` files.
+Top-level `const`, `let`, `var`, function, class and static import bindings
+persist between calls. `require(...)` resolves from the workspace. Static and
+dynamic imports support Node built-ins, installed workspace packages and local
+ESM `.js` or `.mjs` files.
 
-The kernel exposes `opencode.cwd`, `opencode.homeDir`, `opencode.tmpDir`, `tmpDir`, and `opencode.emitImage(imageLike)`. Image attachments support PNG, JPEG, WebP, and GIF, with a 5 MiB limit per image and at most four images per execution.
+The kernel exposes `opencode.cwd`, `opencode.homeDir`, `opencode.tmpDir`,
+`tmpDir`, `opencode.emitImage(imageLike)` and `opencode.emitText(textLike)`.
+`emitText` accepts a string or `{ text }` and appends it to the tool result.
+Image attachments may be PNG, JPEG, WebP or GIF. Each image is limited to 5
+MiB, with at most four images per execution.
 
-Explicitly close browser resources before resetting the REPL or ending a browser QA task. A timeout or cancellation ends only that tool call: its cell continues in the kernel, and later calls wait behind it. Do not repeat an action after such a result without checking its eventual state. Use `js_repl_reset` to stop a stuck cell and discard the current session; fatal asynchronous errors, process crashes, and fully closing OpenCode also tear down the kernel. Native custom tools do not receive the plugin session-deletion lifecycle hook, so reset explicitly when a long-lived session no longer needs the REPL.
+A timeout or cancellation stops the tool call but does not stop its cell. The
+cell keeps running in the kernel, and later calls wait behind it. Check the
+resulting state before repeating an action. Use `js_repl_reset` to stop a stuck
+cell.
 
-## Playwright Skill
+Close browser resources before resetting the REPL. The OpenCode background
+service owns the plugin, so closing the TUI may leave the kernel running. Reset
+long-lived sessions when they no longer need the REPL. Restarting the service
+stops every plugin kernel.
 
-`skills/playwright-interactive/` provides persistent browser and Electron QA instructions. Before first use, call `js_repl_playwright_setup`; it installs Playwright 1.62.0 and Chromium under `~/.cache/opencode/playwright` by default, rather than modifying each application workspace. The REPL automatically resolves the shared library and browser path thereafter. Set `OPENCODE_PLAYWRIGHT_CACHE_DIR` to relocate the managed cache, `OPENCODE_PLAYWRIGHT_NPM_PATH` or `OPENCODE_PLAYWRIGHT_NPX_PATH` to select package executables, and `PLAYWRIGHT_BROWSERS_PATH` to reuse an existing browser cache.
+## Playwright skill
 
-By default, the skill launches Chromium with `launchPersistentContext()` and stores browser data, `behavior.json`, `persona.json`, and `profile.json` under the session's `opencode.tmpDir/stealth/`. Each OpenCode session gets its own profile, so multiple sessions can run browsers simultaneously. Within one session, desktop and mobile share the profile and must run sequentially. Mobile is an explicit viewport/touch override of that session identity. `resetProfile()` closes the session, deletes the dedicated identity, and does not relaunch; the next `ensureWebBrowser()` or `ensureMobileBrowser()` creates it on demand.
+Call `js_repl_playwright_setup` before the first browser session. It installs
+Playwright 1.62.0 and Chromium under `~/.cache/opencode/playwright` by default.
+The REPL then resolves the shared package and browser path automatically.
 
-Use `ensureWebBrowser()` or `ensureMobileBrowser()` for every Chromium web session. Each returns a session controller with explicit-page methods including `resolveVisible`, `interactiveElements`, `click`, `doubleClick`, `hover`, `wheel`, `scroll`, `dragTo`, `type`, `fill`, `press`, `focus`, `check`, `uncheck`, `selectOption`, `tap`, `screenshot`, and `stop`. Existing pages, new pages, and popups are registered automatically. Managed target hit testing operates in each element's actual document or open shadow root. When a target's realm is unknown, the controller can resolve an exact semantic locator across current and newly attached frames. When the exact element is unknown, it inventories visible interactive DOM elements across frames and open shadow roots with their live locators, accessible-name evidence, roles, states, and context; agents select semantically from the unfiltered inventory rather than applying guessed language-specific regexes. If no entry fits, the screenshot is the next source of truth. Main-frame absence is not treated as whole-browser absence. Navigation-capable clicks are treated as having three possible outcomes: same-page navigation, a new managed tab or popup, or no navigation. The skill requires agents to resolve that outcome and update their active `page` handle rather than continuing against a stale opener tab. If one failed action or inspection pass leaves the next target unclear, the skill requires an immediate viewport screenshot through the controller and `opencode.emitImage()` before further guessing or scripting; after a click, open managed page URLs are checked first. A remaining target failure is diagnosed with one locator-scoped inspection that reports its frame, root, geometry, and hit element instead of separate speculative frame/shadow/overlay probes. Frames are tracked through normal Playwright lifecycle events; dedicated workers and service workers are observed only, and no inert init script is installed. Direct `locator.*`, `page.mouse`, `page.keyboard`, `page.touchscreen`, `evaluate()` mutation, and DOM assignment remain valid ordinary Playwright but are unmanaged because public Playwright provides no transparent interception layer. Playwright 1.62.0 still enables `Runtime.enable` as part of normal operation; this feature is not suppressed or intercepted. Electron is unchanged.
+For local web apps, the skill launches standard Chromium and uses ordinary
+Playwright APIs without loading the stealth runtime. Local targets include
+apps identified as running on the local machine, `file:` URLs, `localhost`,
+`*.localhost`, `127.0.0.0/8` and `[::1]`. Electron likewise starts without a
+Chromium or stealth session.
 
-`interactiveElements()` performs one untruncated snapshot of the main document and currently attached frames with real documents. The first inventory after a main-frame navigation allows one short render window for asynchronously attached UI, but it does not repeatedly count elements or wait for a dynamic page to settle; subsequent inventories are immediate. If the requested control attached after that snapshot, the agent takes a screenshot and then one fresh inventory. Diagnostic and visual-review screenshots use full-page capture when possible, falling back to the viewport only when full-page capture fails or exceeds the attachment limit.
+For remote websites, the skill opens Chromium with
+`launchPersistentContext()`. Browser data, `behavior.json`, `persona.json` and
+`profile.json` are stored under the session's `opencode.tmpDir/stealth/`
+directory. The runtime keeps Chromium's native version-coherent user agent and
+automation state and rejects identity-critical caller overrides. Managed input
+is task-bound and emits no periodic pointer movement while idle. Separate
+OpenCode sessions can run browsers at the same time. Desktop and responsive
+touch modes in one remote session share a profile, so they must run one after
+the other. Responsive touch mode does not impersonate Safari or a physical
+device.
+
+Remote mode uses `ensureWebBrowser()` or `ensureMobileBrowser()` to create a
+Chromium session. The returned controller provides:
+
+- Page discovery through `pages()` and `newPage()`, including automatic popup
+  registration
+- Cross-frame and open-shadow-root lookup through `resolveVisible()` and
+  `interactiveElements()`
+- Managed input methods including `click`, `doubleClick`, `hover`, `scroll`,
+  `dragTo`, `type`, `fill`, `press`, `check`, `selectOption` and `tap`
+- Screenshots through `screenshot()` and cleanup through `stop()`
+- Coarse, in-memory identity and session diagnostics through `identity`,
+  `capabilities()`, `telemetry()` and `pageState()`
+
+`interactiveElements()` takes one untruncated inventory of visible controls in
+the main document and attached frames. The first inventory after navigation
+allows a short render window for frames that attach asynchronously. Later
+inventories return immediately. If a control appears after the snapshot, the
+skill takes a screenshot and then one fresh inventory.
+
+The skill checks whether a click navigated the current page, opened another
+page or did neither. When a target is unclear after one failed action or
+inspection, it takes a screenshot before trying another selector. Target
+diagnostics report the element's frame, root, geometry and hit-tested element
+in one inspection.
+
+Remote mode does not add a user-agent override, suppress Chromium's native
+automation state, patch CDP, rotate network identity or manipulate challenge
+systems. The runtime blocks custom user agent, locale, timezone, viewport,
+mobile, touch, scale, screen, identity-bearing HTTP header and Chromium
+argument overrides so these settings cannot silently contradict each other.
+Its telemetry is coarse and in-memory: action, failure, navigation and popup
+counts plus the latest main document status. It does not collect URLs, page
+fingerprints, tokens or input contents.
+
+Direct Playwright calls such as `locator.*`, `page.mouse`, `page.keyboard`,
+`page.touchscreen` and DOM mutation through `evaluate()` still work, but they
+do not use the managed input layer. Frames follow the normal Playwright
+lifecycle. Dedicated workers and service workers are observed but not
+modified. Playwright still enables `Runtime.enable` during normal operation.
+Local web and Electron testing use ordinary Playwright calls instead of these
+controller methods. Electron support is separate from the Chromium stealth
+runtime.
+
+Calling `resetProfile()` closes the browser and deletes the session's stored
+identity. It does not reopen the browser. The next `ensureWebBrowser()` or
+`ensureMobileBrowser()` call creates a new profile.
+
+Profile reset is lifecycle cleanup, not a way to retry an access decision.
+The skill stops on bot challenges, challenge loops, explicit automated-access
+denials and HTTP `403` or `429` responses. It does not solve CAPTCHAs or retry,
+switch modes, reset identity or open parallel sessions to seek a different
+result. Authorized tests should use provider test keys, staging, narrow
+allowlisting or headed human completion.
 
 ## Configuration
 
-OpenCode prompts before running JavaScript by default. A consumer project may configure the permission explicitly:
+OpenCode asks when no permission rule matches. To state that policy explicitly,
+add this V2 rule to `opencode.json(c)`:
 
-```json
+```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "permission": {
-    "js_repl": "ask"
-  }
+  "permissions": [
+    { "action": "js_repl", "resource": "*", "effect": "ask" }
+  ]
 }
 ```
 
-Set `OPENCODE_JS_REPL_NODE_PATH` to choose a Node binary. Set `OPENCODE_JS_REPL_NODE_MODULE_DIRS` to a platform path-delimited list of additional package resolution roots.
+Use `allow` to run all three tools without prompting or `deny` to block them.
+The rule may be global, project-specific or part of an agent's `permissions`
+array.
 
-Set `OPENCODE_JS_REPL_CACHE_DIR` to relocate the shared Meriyah cache and `OPENCODE_JS_REPL_NPM_PATH` to select the npm executable used for its one-time install.
+The runtime reads these environment variables:
+
+- `OPENCODE_JS_REPL_NODE_PATH` selects the Node.js binary.
+- `OPENCODE_JS_REPL_NODE_MODULE_DIRS` adds package resolution roots using the
+  platform path delimiter.
+- `OPENCODE_JS_REPL_CACHE_DIR` changes the Meriyah cache directory.
+- `OPENCODE_JS_REPL_NPM_PATH` selects npm for the Meriyah installation.
+- `OPENCODE_PLAYWRIGHT_CACHE_DIR` changes the Playwright cache directory.
+- `OPENCODE_PLAYWRIGHT_NPM_PATH` and `OPENCODE_PLAYWRIGHT_NPX_PATH` select the
+  package executables used by Playwright setup.
+- `PLAYWRIGHT_BROWSERS_PATH` reuses or relocates a Playwright browser cache.
 
 ## Security
 
-This is a trusted local-code runtime, not a sandbox. Evaluated code has the current user's Node capabilities, including `process`, `require`, filesystem and network access, and `child_process` and `worker_threads` modules. Treat `permission.js_repl = "allow"` as permission to run arbitrary local code.
+The REPL is a trusted local-code runtime, not a sandbox. Evaluated code runs
+with the current user's Node.js permissions. It can access the filesystem and
+network and can load modules including `child_process` and `worker_threads`.
+An `allow` rule for the `js_repl` action permits arbitrary local code
+execution.
 
-The bundled runtime is adapted from OpenAI Codex revision `219c65dc2f7a2fdb2adef73d572189e80b7470e5`. See `tools/NOTICE.txt` and `tools/LICENSE.txt`.
+The runtime is adapted from OpenAI Codex revision
+`219c65dc2f7a2fdb2adef73d572189e80b7470e5`. See `tools/NOTICE.txt` and
+`tools/LICENSE.txt`.

@@ -1,8 +1,32 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1";
+const PERSONA_SCHEMA = 2;
+const MOBILE_VIEWPORT = Object.freeze({ width: 390, height: 844 });
 const MOBILE_DEVICE_SCALE_FACTOR = 3;
+const IDENTITY_CONTEXT_OPTIONS = Object.freeze([
+  "userAgent",
+  "locale",
+  "timezoneId",
+  "isMobile",
+  "hasTouch",
+  "deviceScaleFactor",
+  "viewport",
+  "screen",
+]);
+const IDENTITY_ARGUMENTS = Object.freeze([
+  "--disable-blink-features=AutomationControlled",
+  "--force-device-scale-factor",
+  "--lang",
+  "--user-agent",
+]);
+const IDENTITY_HEADERS = Object.freeze([
+  "accept-language",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-platform",
+  "user-agent",
+]);
 let installedRuntime;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -57,9 +81,6 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     keyHoldMax: 110,
     actionGapMean: 400,
     actionGapSigma: 0.35,
-    idleThreshold: 3000,
-    idleInterval: 2000,
-    idleDrift: 12,
   };
 
   const number = (value, fallback, minimum, maximum) => {
@@ -85,9 +106,6 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     profile.keyHoldMax = number(value.keyHoldMax, profile.keyHoldMax, 60, 180);
     profile.actionGapMean = number(value.actionGapMean, profile.actionGapMean, 200, 800);
     profile.actionGapSigma = number(value.actionGapSigma, profile.actionGapSigma, 0.1, 0.6);
-    profile.idleThreshold = number(value.idleThreshold, profile.idleThreshold, 2500, 8000);
-    profile.idleInterval = number(value.idleInterval, profile.idleInterval, 1000, 4000);
-    profile.idleDrift = number(value.idleDrift, profile.idleDrift, 4, 24);
     if (profile.overshootMax < profile.overshootMin) profile.overshootMax = profile.overshootMin + 1;
     if (profile.clickHoldMax < profile.clickHoldMin) profile.clickHoldMax = profile.clickHoldMin + 1;
     if (profile.keyHoldMax < profile.keyHoldMin) profile.keyHoldMax = profile.keyHoldMin + 1;
@@ -106,7 +124,6 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     typingSigma: uniform(0.25, 0.35),
     actionGapMean: uniform(340, 460),
     actionGapSigma: uniform(0.3, 0.4),
-    idleInterval: uniform(1700, 2300),
   });
 
   const stealthPaths = ({ dataDir } = {}) => {
@@ -176,19 +193,19 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   };
 
   const normalizePersona = (value) => {
-    if (!value || value.schema !== 1 || typeof value.personaId !== "string" || !value.personaId || typeof value.locale !== "string" || typeof value.timezoneId !== "string") return undefined;
+    if (!value || ![1, PERSONA_SCHEMA].includes(value.schema) || typeof value.personaId !== "string" || !value.personaId || typeof value.locale !== "string" || typeof value.timezoneId !== "string") return undefined;
     return {
-      schema: 1,
+      schema: PERSONA_SCHEMA,
       personaId: value.personaId,
       profileKind: "desktop",
       browserChannel: "chromium",
+      browserIdentity: "native",
       locale: value.locale,
       timezoneId: value.timezoneId,
       viewport: null,
       screen: null,
       deviceScaleFactor: number(value.deviceScaleFactor, 1, 1, 4),
       mobileDeviceScaleFactor: number(value.mobileDeviceScaleFactor, MOBILE_DEVICE_SCALE_FACTOR, 1, 4),
-      mobileUserAgent: typeof value.mobileUserAgent === "string" && value.mobileUserAgent ? value.mobileUserAgent : MOBILE_USER_AGENT,
       isMobile: false,
       hasTouch: false,
       permissionsPolicy: "default",
@@ -200,16 +217,16 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   };
 
   const createPersona = () => ({
-    schema: 1,
+    schema: PERSONA_SCHEMA,
     personaId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
     profileKind: "desktop",
     browserChannel: "chromium",
+    browserIdentity: "native",
     ...locale(),
     viewport: null,
     screen: null,
     deviceScaleFactor: 1,
     mobileDeviceScaleFactor: MOBILE_DEVICE_SCALE_FACTOR,
-    mobileUserAgent: MOBILE_USER_AGENT,
     isMobile: false,
     hasTouch: false,
     permissionsPolicy: "default",
@@ -220,8 +237,20 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   });
 
   const normalizeMetadata = (value) => value && value.schema === 1 && typeof value.profileId === "string" && value.profileId
-    ? { schema: 1, profileId: value.profileId, personaId: value.personaId || "", behaviorSchema: 1, personaSchema: 1, createdAt: value.createdAt || new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: Number.isInteger(value.resetGeneration) ? value.resetGeneration : 0 }
+    ? { schema: 1, profileId: value.profileId, personaId: value.personaId || "", behaviorSchema: 1, personaSchema: PERSONA_SCHEMA, createdAt: value.createdAt || new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: Number.isInteger(value.resetGeneration) ? value.resetGeneration : 0 }
     : undefined;
+
+  const assertCoherentLaunchOptions = (launchOptions, contextOptions) => {
+    const suppliedOptions = [launchOptions, contextOptions];
+    const conflictingOptions = IDENTITY_CONTEXT_OPTIONS.filter((key) => suppliedOptions.some((options) => Object.prototype.hasOwnProperty.call(options, key)));
+    if (conflictingOptions.length) throw new Error(`Identity-critical launch and context options are managed by the runtime: ${conflictingOptions.join(", ")}`);
+    const conflictingArguments = (launchOptions.args || []).filter((argument) => IDENTITY_ARGUMENTS.some((prefix) => argument === prefix || argument.startsWith(`${prefix}=`)));
+    if (conflictingArguments.length) throw new Error(`Identity-critical Chromium arguments are managed by the runtime: ${conflictingArguments.join(", ")}`);
+    const conflictingHeaders = suppliedOptions
+      .flatMap((options) => Object.keys(options.extraHTTPHeaders || {}))
+      .filter((header) => IDENTITY_HEADERS.includes(header.toLowerCase()));
+    if (conflictingHeaders.length) throw new Error(`Identity-critical HTTP headers are managed by Chromium: ${[...new Set(conflictingHeaders)].join(", ")}`);
+  };
 
   const targetBox = async (currentPage, target, trialOptions) => {
     if (target && typeof target.boundingBox === "function") {
@@ -287,6 +316,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     const launchChromium = suppliedChromium || chromium;
     const launchHeadless = suppliedHeadless ?? headless;
     if (!launchChromium?.launchPersistentContext) throw new TypeError("createStealthController requires the shared Playwright chromium object");
+    assertCoherentLaunchOptions(launchOptions, contextOptions);
     const paths = stealthPaths({ dataDir });
     const existing = controllerRegistry.get(paths.root);
     if (existing && existing.state() === "open") {
@@ -295,13 +325,13 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     }
     const profile = await loadBehavior({ dataDir: paths.root });
     const persona = await readRecord(paths.persona, normalizePersona, createPersona);
-    const metadata = await readRecord(paths.identityMetadata, normalizeMetadata, () => ({ schema: 1, profileId: profile.profileId, personaId: persona.personaId, behaviorSchema: 1, personaSchema: 1, createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: 0 }));
+    const metadata = await readRecord(paths.identityMetadata, normalizeMetadata, () => ({ schema: 1, profileId: profile.profileId, personaId: persona.personaId, behaviorSchema: 1, personaSchema: PERSONA_SCHEMA, createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: 0 }));
     metadata.profileId = profile.profileId;
     metadata.personaId = persona.personaId;
     await writeRecord(paths.identityMetadata, metadata);
     const mobile = profileKind === "mobile";
     const args = [...(launchOptions.args || [])];
-    if (!args.includes("--disable-blink-features=AutomationControlled")) args.push("--disable-blink-features=AutomationControlled");
+    const emulatedViewport = mobile ? { ...MOBILE_VIEWPORT } : null;
     const options = {
       ...launchOptions,
       ...contextOptions,
@@ -309,10 +339,11 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       args,
       locale: persona.locale,
       timezoneId: persona.timezoneId,
-      viewport: contextOptions.viewport !== undefined ? contextOptions.viewport : (mobile ? { width: 390, height: 844 } : null),
+      viewport: emulatedViewport,
+      ...(mobile ? { screen: { ...MOBILE_VIEWPORT } } : {}),
       isMobile: mobile,
       hasTouch: mobile,
-      ...(mobile ? { userAgent: persona.mobileUserAgent, deviceScaleFactor: persona.mobileDeviceScaleFactor } : contextOptions.viewport === null ? {} : { deviceScaleFactor: persona.deviceScaleFactor }),
+      ...(mobile ? { deviceScaleFactor: persona.mobileDeviceScaleFactor } : {}),
     };
     let persistentContext;
     try {
@@ -320,6 +351,20 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     } catch (error) {
       throw new Error(`Could not open the persistent stealth profile at ${paths.userData}. Close any other session using it before retrying. ${error}`);
     }
+    const browserVersion = persistentContext.browser()?.version?.() || "unknown";
+    const identity = Object.freeze({
+      browserEngine: "chromium",
+      browserVersion,
+      browserIdentity: "native",
+      userAgentOverride: false,
+      automationControlledOverride: false,
+      locale: persona.locale,
+      timezoneId: persona.timezoneId,
+      emulation: mobile ? "responsive-touch" : "desktop",
+      viewport: options.viewport ? Object.freeze({ ...options.viewport }) : null,
+      screen: options.screen ? Object.freeze({ ...options.screen }) : null,
+      deviceScaleFactor: mobile ? persona.mobileDeviceScaleFactor : null,
+    });
 
     const stateByPage = new WeakMap();
     const livePages = new Set();
@@ -329,6 +374,14 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     let closePromise;
     let contextClosed = false;
     let lastManagedOrigin;
+    const telemetry = {
+      startedAt: new Date().toISOString(),
+      managedActions: 0,
+      failedActions: 0,
+      mainFrameNavigations: 0,
+      popups: 0,
+      lastDocumentStatus: undefined,
+    };
     const removers = [];
     const addListener = (surface, event, listener) => { surface.on(event, listener); removers.push(() => surface.off(event, listener)); };
     const rememberOrigin = (currentPage) => {
@@ -358,29 +411,18 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       for (const worker of state.workers) liveWorkers.delete(worker);
       state.workers.clear();
     };
-    const scheduleIdle = (currentPage, state) => {
-      if (state.timer || state.stopped || status !== "open") return;
-      state.timer = setTimeout(async () => {
-        state.timer = undefined;
-        if (state.stopped || status !== "open" || currentPage.isClosed()) return;
-        if (state.busy) { state.lastActivity = Date.now(); return scheduleIdle(currentPage, state); }
-        if (Date.now() - state.lastActivity < profile.idleThreshold) return scheduleIdle(currentPage, state);
-        state.busy = true;
-        try {
-          const size = await viewport(currentPage);
-          const from = { x: state.x ?? size.width / 2, y: state.y ?? size.height / 2 };
-          const next = { x: clamp(from.x + uniform(-profile.idleDrift, profile.idleDrift), 20, Math.max(20, size.width - 20)), y: clamp(from.y + uniform(-profile.idleDrift, profile.idleDrift), 20, Math.max(20, size.height - 20)) };
-          await currentPage.mouse.move(next.x, next.y);
-          state.x = next.x;
-          state.y = next.y;
-        } catch {} finally { state.busy = false; state.lastActivity = Date.now() - profile.idleThreshold + profile.idleInterval; scheduleIdle(currentPage, state); }
-      }, Math.max(250, state.lastActivity + profile.idleThreshold - Date.now()));
-      state.timer.unref?.();
-    };
-    const markActivity = (currentPage, state) => { state.lastActivity = Date.now(); if (state.timer) clearTimeout(state.timer); state.timer = undefined; scheduleIdle(currentPage, state); };
+    const markActivity = (state) => { state.lastActivity = Date.now(); if (state.timer) clearTimeout(state.timer); state.timer = undefined; };
     const queueAction = (currentPage, name, action) => {
       const state = requirePage(currentPage);
-      const run = async () => { requirePage(currentPage); state.busy = true; state.action = name; try { return await action(state); } finally { state.busy = false; state.action = undefined; markActivity(currentPage, state); } };
+      const run = async () => {
+        requirePage(currentPage);
+        telemetry.managedActions += 1;
+        state.busy = true;
+        state.action = name;
+        try { return await action(state); }
+        catch (error) { telemetry.failedActions += 1; throw error; }
+        finally { state.busy = false; state.action = undefined; markActivity(state); }
+      };
       const result = state.queue.then(run, run);
       state.queue = result.catch(() => {});
       return result;
@@ -428,16 +470,21 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     const registerPage = (currentPage) => {
       if (status !== "open" || !currentPage || currentPage.isClosed() || stateByPage.has(currentPage)) return;
       if (currentPage.context() !== persistentContext) throw new Error("Cannot register a Page from another BrowserContext");
-      const state = { x: undefined, y: undefined, busy: false, action: undefined, lastActivity: Date.now(), inventoryReadyAt: Date.now() + 1800, timer: undefined, stopped: false, queue: Promise.resolve(), frames: new Set(), workers: new Set(), removers: [] };
+      const state = { x: undefined, y: undefined, busy: false, action: undefined, lastActivity: Date.now(), inventoryReadyAt: Date.now() + 1800, lastDocumentStatus: undefined, timer: undefined, stopped: false, queue: Promise.resolve(), frames: new Set(), workers: new Set(), removers: [] };
       stateByPage.set(currentPage, state);
       livePages.add(currentPage);
       rememberOrigin(currentPage);
       const registerFrame = (frame) => { if (frame !== currentPage.mainFrame()) state.frames.add(frame); };
       const registerWorker = (worker) => { state.workers.add(worker); liveWorkers.add(worker); };
       const onClose = () => { livePages.delete(currentPage); stopPage(state); };
-      const onPopup = (popup) => registerPage(popup);
+      const onPopup = (popup) => { telemetry.popups += 1; registerPage(popup); };
       const onFrameAttached = registerFrame;
-      const onFrameNavigated = (frame) => { registerFrame(frame); if (frame === currentPage.mainFrame()) { state.inventoryReadyAt = Date.now() + 1800; rememberOrigin(currentPage); } };
+      const onFrameNavigated = (frame) => { registerFrame(frame); if (frame === currentPage.mainFrame()) { telemetry.mainFrameNavigations += 1; state.inventoryReadyAt = Date.now() + 1800; rememberOrigin(currentPage); } };
+      const onResponse = (response) => {
+        try {
+          if (response.request().resourceType() === "document" && response.frame() === currentPage.mainFrame()) state.lastDocumentStatus = telemetry.lastDocumentStatus = response.status();
+        } catch {}
+      };
       const onFrameDetached = (frame) => state.frames.delete(frame);
       const onWorker = registerWorker;
       currentPage.on("close", onClose);
@@ -446,6 +493,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       currentPage.on("framenavigated", onFrameNavigated);
       currentPage.on("framedetached", onFrameDetached);
       currentPage.on("worker", onWorker);
+      currentPage.on("response", onResponse);
       state.removers.push(
         () => currentPage.off("close", onClose),
         () => currentPage.off("popup", onPopup),
@@ -453,10 +501,10 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
         () => currentPage.off("framenavigated", onFrameNavigated),
         () => currentPage.off("framedetached", onFrameDetached),
         () => currentPage.off("worker", onWorker),
+        () => currentPage.off("response", onResponse),
       );
       for (const frame of currentPage.frames()) registerFrame(frame);
       for (const worker of currentPage.workers()) registerWorker(worker);
-      scheduleIdle(currentPage, state);
     };
     for (const currentPage of persistentContext.pages()) registerPage(currentPage);
     addListener(persistentContext, "page", registerPage);
@@ -537,12 +585,14 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       get context() { requireOpenBrowser(); return persistentContext; },
       profile: Object.freeze({ ...profile }),
       persona: Object.freeze({ ...persona }),
+      identity,
       dataDir: paths.root,
       pages: () => { requireOpenBrowser(); return persistentContext.pages().filter((currentPage) => stateByPage.has(currentPage)); },
       newPage: async () => { requireOpenBrowser(); const currentPage = await persistentContext.newPage(); registerPage(currentPage); return currentPage; },
-      pageState: (currentPage) => { const state = requirePage(currentPage); return Object.freeze({ registered: true, busy: state.busy, action: state.action, timerActive: Boolean(state.timer), stopped: state.stopped }); },
+      pageState: (currentPage) => { const state = requirePage(currentPage); return Object.freeze({ registered: true, busy: state.busy, action: state.action, timerActive: Boolean(state.timer), stopped: state.stopped, lastDocumentStatus: state.lastDocumentStatus }); },
       managed: (currentPage) => { requirePage(currentPage); return true; },
-      capabilities: () => Object.freeze({ state: status, profileKind, lastManagedOrigin, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: mobile ? persona.mobileDeviceScaleFactor : persona.deviceScaleFactor, userAgent: mobile ? persona.mobileUserAgent : undefined, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
+      telemetry: () => Object.freeze({ ...telemetry }),
+      capabilities: () => Object.freeze({ state: status, profileKind, lastManagedOrigin, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, ambientInput: false, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: identity.deviceScaleFactor, userAgent: undefined, identity, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, runtimeCdpPatch: false, standardPlaywrightProtocol: true, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
       resolveVisible,
       interactiveElements,
       moveTo: (currentPage, target) => queueAction(currentPage, "moveTo", (state) => moveToTarget(currentPage, state, target)),
@@ -595,8 +645,8 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   };
 
   return {
-    ensureWebBrowser: () => ensureController("desktop", { dataDir: webProfileDir, contextOptions: { viewport: null }, profileKind: "desktop" }),
-    ensureMobileBrowser: () => ensureController("mobile", { dataDir: mobileProfileDir || webProfileDir, contextOptions: { viewport: { width: 390, height: 844 } }, profileKind: "mobile" }),
+    ensureWebBrowser: () => ensureController("desktop", { dataDir: webProfileDir, profileKind: "desktop" }),
+    ensureMobileBrowser: () => ensureController("mobile", { dataDir: mobileProfileDir || webProfileDir, profileKind: "mobile" }),
     createStealthController,
     launchStealthChromium: createStealthController,
     resetStealthProfile,
