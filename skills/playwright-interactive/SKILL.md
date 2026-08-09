@@ -105,6 +105,44 @@ console.log("Loaded:", await page.title());
 
 Do not navigate during startup merely to prove that the browser opened. The startup capability result is sufficient.
 
+## Navigation Integrity
+
+`page.goto()` opens a site, not an application action. The agent **MUST NOT** use a deep link, query string, fragment, result URL, form endpoint, or guessed route to bypass the user-facing flow. It **MUST** navigate only to the requested site’s origin, then use the visible UI and managed input to complete the request. For example, to search Google, navigate to `https://www.google.com/`, inspect the page, fill the visible search field, and submit it; never navigate directly to `https://www.google.com/search?q=...`.
+
+The same rule applies after recovery and to local applications: use the application origin root, then reach every state through visible controls. A URL supplied verbatim by the user may be opened as requested, but its path, query, and fragment must not be invented, edited, or reused to shortcut an interaction.
+
+## Information Before Interaction
+
+Before any browser interaction, the agent **MUST** decide whether the request can be answered from the current document DOM/source. An interaction includes navigation, clicking, filling, pressing, hovering, dragging, tapping, scrolling, or any other input. If the needed information is already present in the current DOM/source, the agent **MUST** inspect it and answer directly without interacting. Text outside the viewport or a scroll container can still already be present in the DOM; it is not evidence that scrolling or clicking is required.
+
+Use locator-scoped DOM inspection or `evaluate` only to read the current page state; neither may mutate the page or trigger application behavior. This is the lowest-impact and most stealth-preserving path for information-only requests. It does not relax the cross-frame controller rules for finding controls.
+
+If the information is not present, or the user asks to change application state, use the smallest necessary visible UI flow through managed input. Do not substitute a deep link, a constructed URL, or any other shortcut for that interaction.
+
+## Scrolling
+
+Use managed scrolling only when the current DOM/source does not already answer the request or the user requires a visible state change. To scroll the document at the current pointer position, use `await stealth.scroll(page, 850)`. To scroll a nested panel, list, or other surface, pass its controller-produced locator and the delta: `await stealth.scroll(page, panelLocator, 850)`. This moves the pointer to the intended surface before issuing the humanized wheel sequence.
+
+Passing a locator without a delta, `await stealth.scroll(page, targetLocator)`, preserves the existing behavior of bringing that target into view. Do not send raw mouse-wheel calls or script `scrollTop`; use the controller method so scrolling stays managed.
+
+## Closed Browser Recovery
+
+If a user closes the Chromium window or browser process, the managed context and every former `page` handle are gone. The controller reports this explicitly as `Managed desktop browser is closed` or `Managed mobile browser is closed`. This is **not** a navigation, selector, popup, screenshot, or stale-page diagnostic.
+
+On that error, the agent **MUST NOT** inspect `stealth.pages()`, screenshot, create a page, navigate, or retry an action through the closed controller. It **MUST** record the old controller's `lastManagedOrigin`, then immediately replace the handles through the existing launcher without rerunning Playwright setup or the full startup block:
+
+```js
+var recoveryOrigin = stealth.capabilities().lastManagedOrigin;
+stealth = await ensureWebBrowser();
+context = stealth.context;
+browser = context.browser();
+page = stealth.pages()[0] || await stealth.newPage();
+if (recoveryOrigin) await page.goto(recoveryOrigin, { waitUntil: "domcontentloaded" });
+console.log("Managed stealth browser reopened", stealth.capabilities());
+```
+
+The replacement tab is blank by design. The preserved value is an origin only, never a deep link. After its root page loads, inventory the visible controls and resume through managed UI interaction. For mobile, use `mobileStealth = await ensureMobileBrowser()` and replace `mobileContext` and `mobilePage` the same way. Do not assume the browser retained the previous URL path, form values, tabs, or pending navigation.
+
 ## Tabs And Navigation
 
 A click may navigate the current page, open a new tab or popup, or leave navigation unchanged. The agent **MUST NOT** assume which outcome occurred. For any click that may navigate, snapshot the managed pages and current URL, perform the click, then resolve the observed outcome:
