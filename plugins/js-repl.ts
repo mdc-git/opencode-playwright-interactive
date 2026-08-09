@@ -33,18 +33,26 @@ const register = (plugin: any, tools: any, name: string, legacy: LegacyTool, inp
     output: { type: "string" },
     options: { permission: "js_repl" },
     execute: async (args: Record<string, unknown>, context: Record<string, unknown>) => {
-      const session = await plugin.session.get({ sessionID: context.sessionID })
-      const result = await legacy.execute(args, legacyContext(context, session.location.directory)) as LegacyResult
-      const output = result.output ?? ""
-      const files = result.attachments?.map((attachment) => ({
-        type: "file" as const,
-        uri: attachment.url,
-        mime: attachment.mime,
-        ...(attachment.filename ? { name: attachment.filename } : {}),
-      })) ?? []
-      return {
-        output,
-        content: files.length ? [{ type: "text", text: output }, ...files] : output,
+      try {
+        const session = await plugin.session.get({ sessionID: context.sessionID })
+        const result = await legacy.execute(args, legacyContext(context, session.location.directory)) as LegacyResult
+        const output = result.output ?? ""
+        const files = result.attachments?.map((attachment) => ({
+          type: "file" as const,
+          uri: attachment.url,
+          mime: attachment.mime,
+          ...(attachment.filename ? { name: attachment.filename } : {}),
+        })) ?? []
+        return {
+          output,
+          content: files.length ? [{ type: "text", text: output }, ...files] : output,
+        }
+      } catch (error) {
+        const output = `js_repl failed: ${error instanceof Error ? error.message : String(error)}`
+        return {
+          output,
+          content: output,
+        }
       }
     },
   })
@@ -57,7 +65,7 @@ export default Plugin.define({
       register(context, tools, "js_repl", jsRepl as LegacyTool, {
         type: "object",
         properties: {
-          code: { type: "string", description: "Plain JavaScript source to execute." },
+          code: { type: "string", description: "Plain Node.js source for the REPL. Keep imports here; do not place them in top-level Code Mode execute source." },
           timeout_ms: { type: "integer", minimum: 1, maximum: 300000 },
         },
         required: ["code"],
