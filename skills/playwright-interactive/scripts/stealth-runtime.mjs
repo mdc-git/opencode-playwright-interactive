@@ -327,11 +327,25 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     const liveServiceWorkers = new Set();
     let status = "open";
     let closePromise;
+    let contextClosed = false;
+    let lastManagedOrigin;
     const removers = [];
     const addListener = (surface, event, listener) => { surface.on(event, listener); removers.push(() => surface.off(event, listener)); };
+    const rememberOrigin = (currentPage) => {
+      try {
+        const url = new URL(currentPage.url());
+        if (url.protocol === "http:" || url.protocol === "https:") lastManagedOrigin = url.origin;
+      } catch {}
+    };
+    const closedBrowserError = () => new Error(`Managed ${profileKind} browser is closed. Recover with ${mobile ? "mobileStealth = await ensureMobileBrowser()" : "stealth = await ensureWebBrowser()"}, then replace the page with ${mobile ? "mobilePage = mobileStealth.pages()[0] || await mobileStealth.newPage()" : "page = stealth.pages()[0] || await stealth.newPage()"}.${lastManagedOrigin ? ` The last managed origin was ${lastManagedOrigin}; navigate only to that origin and resume with real UI interaction.` : " The replacement page is blank; navigate only to the requested site origin and resume with real UI interaction."} Do not inspect or act on the previous controller or page.`);
+    const requireOpenBrowser = () => {
+      if (status !== "open" || contextClosed) throw closedBrowserError();
+    };
     const requirePage = (currentPage) => {
+      requireOpenBrowser();
+      if (!currentPage || typeof currentPage.isClosed !== "function") throw new Error("The target Page is not managed by this stealth session");
       const state = stateByPage.get(currentPage);
-      if (!currentPage || typeof currentPage.isClosed !== "function" || !state || state.stopped || currentPage.isClosed()) throw new Error("The target Page is not managed by this stealth session");
+      if (!state || state.stopped || currentPage.isClosed()) throw new Error("The target Page is closed or is not managed by this stealth session. Select a current managed page or create one with stealth.newPage().");
       return state;
     };
     const viewport = async (currentPage) => currentPage.viewportSize() || await currentPage.evaluate(() => ({ width: innerWidth || 960, height: innerHeight || 540 })).catch(() => ({ width: 960, height: 540 }));
@@ -417,12 +431,13 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       const state = { x: undefined, y: undefined, busy: false, action: undefined, lastActivity: Date.now(), inventoryReadyAt: Date.now() + 1800, timer: undefined, stopped: false, queue: Promise.resolve(), frames: new Set(), workers: new Set(), removers: [] };
       stateByPage.set(currentPage, state);
       livePages.add(currentPage);
+      rememberOrigin(currentPage);
       const registerFrame = (frame) => { if (frame !== currentPage.mainFrame()) state.frames.add(frame); };
       const registerWorker = (worker) => { state.workers.add(worker); liveWorkers.add(worker); };
       const onClose = () => { livePages.delete(currentPage); stopPage(state); };
       const onPopup = (popup) => registerPage(popup);
       const onFrameAttached = registerFrame;
-      const onFrameNavigated = (frame) => { registerFrame(frame); if (frame === currentPage.mainFrame()) state.inventoryReadyAt = Date.now() + 1800; };
+      const onFrameNavigated = (frame) => { registerFrame(frame); if (frame === currentPage.mainFrame()) { state.inventoryReadyAt = Date.now() + 1800; rememberOrigin(currentPage); } };
       const onFrameDetached = (frame) => state.frames.delete(frame);
       const onWorker = registerWorker;
       currentPage.on("close", onClose);
@@ -448,8 +463,14 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     if (typeof persistentContext.serviceWorkers === "function") for (const worker of persistentContext.serviceWorkers()) liveServiceWorkers.add(worker);
     const onServiceWorker = (worker) => liveServiceWorkers.add(worker);
     try { addListener(persistentContext, "serviceworker", onServiceWorker); } catch {}
-    let contextClosed = false;
-    const onContextClose = () => { contextClosed = true; if (status === "open") status = "closed"; };
+    const onContextClose = () => {
+      contextClosed = true;
+      if (status === "open") status = "closed";
+      for (const currentPage of livePages) stopPage(stateByPage.get(currentPage));
+      livePages.clear();
+      liveWorkers.clear();
+      liveServiceWorkers.clear();
+    };
     addListener(persistentContext, "close", onContextClose);
     const resolveVisible = async (currentPage, locatorForFrame, { timeout = 5000 } = {}) => {
       requirePage(currentPage);
@@ -504,20 +525,24 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       return Object.freeze(entries);
     };
     const moveToTarget = async (currentPage, state, target, trialOptions) => { const box = await targetBox(currentPage, target, trialOptions); await moveToPoint(currentPage, state, pointFor(box, profile)); };
-    const wheel = (currentPage, deltaX, deltaY) => queueAction(currentPage, "wheel", async () => {
+    const wheelSteps = async (currentPage, deltaX, deltaY) => {
       const steps = Math.max(1, Math.ceil(Math.max(Math.abs(deltaX), Math.abs(deltaY)) / 180));
       for (let index = 0; index < steps; index += 1) { await currentPage.mouse.wheel(deltaX / steps, deltaY / steps); if (index + 1 < steps) await sleep(uniform(30, 80)); }
+    };
+    const wheel = (currentPage, deltaX, deltaY, target) => queueAction(currentPage, "wheel", async (state) => {
+      if (target !== undefined) await moveToTarget(currentPage, state, target);
+      await wheelSteps(currentPage, deltaX, deltaY);
     });
     const session = {
-      get context() { return persistentContext; },
+      get context() { requireOpenBrowser(); return persistentContext; },
       profile: Object.freeze({ ...profile }),
       persona: Object.freeze({ ...persona }),
       dataDir: paths.root,
-      pages: () => persistentContext.pages().filter((currentPage) => stateByPage.has(currentPage)),
-      newPage: async () => { const currentPage = await persistentContext.newPage(); registerPage(currentPage); return currentPage; },
+      pages: () => { requireOpenBrowser(); return persistentContext.pages().filter((currentPage) => stateByPage.has(currentPage)); },
+      newPage: async () => { requireOpenBrowser(); const currentPage = await persistentContext.newPage(); registerPage(currentPage); return currentPage; },
       pageState: (currentPage) => { const state = requirePage(currentPage); return Object.freeze({ registered: true, busy: state.busy, action: state.action, timerActive: Boolean(state.timer), stopped: state.stopped }); },
       managed: (currentPage) => { requirePage(currentPage); return true; },
-      capabilities: () => Object.freeze({ state: status, profileKind, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: mobile ? persona.mobileDeviceScaleFactor : persona.deviceScaleFactor, userAgent: mobile ? persona.mobileUserAgent : undefined, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
+      capabilities: () => Object.freeze({ state: status, profileKind, lastManagedOrigin, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: mobile ? persona.mobileDeviceScaleFactor : persona.deviceScaleFactor, userAgent: mobile ? persona.mobileUserAgent : undefined, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
       resolveVisible,
       interactiveElements,
       moveTo: (currentPage, target) => queueAction(currentPage, "moveTo", (state) => moveToTarget(currentPage, state, target)),
@@ -525,7 +550,11 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       doubleClick: (currentPage, target, options) => clickAction(currentPage, target, options, 2),
       hover: (currentPage, target) => queueAction(currentPage, "hover", (state) => moveToTarget(currentPage, state, target)),
       wheel,
-      scroll: (currentPage, targetOrDelta) => typeof targetOrDelta === "number" ? wheel(currentPage, 0, targetOrDelta) : queueAction(currentPage, "scroll", async (state) => { if (!targetOrDelta || typeof targetOrDelta.scrollIntoViewIfNeeded !== "function") throw new TypeError("Stealth scroll requires a Locator or numeric delta"); await targetOrDelta.scrollIntoViewIfNeeded(); await moveToTarget(currentPage, state, targetOrDelta); }),
+      scroll: (currentPage, targetOrDelta, deltaY) => typeof targetOrDelta === "number"
+        ? wheel(currentPage, 0, targetOrDelta)
+        : Number.isFinite(deltaY)
+          ? wheel(currentPage, 0, deltaY, targetOrDelta)
+          : queueAction(currentPage, "scroll", async (state) => { if (!targetOrDelta || typeof targetOrDelta.scrollIntoViewIfNeeded !== "function") throw new TypeError("Stealth scroll requires a Locator or numeric delta"); await targetOrDelta.scrollIntoViewIfNeeded(); await moveToTarget(currentPage, state, targetOrDelta); }),
       dragTo: (currentPage, source, target) => queueAction(currentPage, "dragTo", async (state) => { await moveToTarget(currentPage, state, source, { button: "left" }); if (typeof source.dragTo !== "function") throw new TypeError("Stealth dragTo requires Locator targets"); await source.dragTo(target); }),
       type: (currentPage, target, text) => queueAction(currentPage, "type", async (state) => { await moveToTarget(currentPage, state, target); await target.focus(); await typeText(currentPage, text); }),
       fill: (currentPage, target, text) => queueAction(currentPage, "fill", async (state) => { if (typeof target.focus !== "function") throw new TypeError("Stealth fill requires a Locator target"); if (typeof target.isEditable === "function" && !(await target.isEditable())) throw new Error("Stealth fill target is not editable"); await moveToTarget(currentPage, state, target); await target.focus(); await currentPage.keyboard.press("Control+A"); await currentPage.keyboard.press("Backspace"); await typeText(currentPage, text); }),
