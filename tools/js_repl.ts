@@ -34,6 +34,7 @@ const { inspect, TextDecoder, TextEncoder } = require("node:util");
 const vm = require("node:vm");
 
 const { SourceTextModule, SyntheticModule } = vm;
+const PROTOCOL_FD = 3;
 const meriyahRequire = createRequire(process.env.OPENCODE_JS_REPL_MERIYAH_RESOLUTION_PATH ?? __filename);
 const meriyahPromise = Promise.resolve(meriyahRequire("meriyah")).then((module) => module.default ?? module);
 const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -91,6 +92,15 @@ const internalBindingSalt = (() => {
 const cwd = process.cwd();
 const tmpDir = process.env.OPENCODE_JS_REPL_TMP_DIR || cwd;
 const homeDir = process.env.HOME ?? null;
+const workspaceRequire = createRequire(path.join(cwd, "__opencode_js_repl__.cjs"));
+
+// This is a trusted local-code runtime, not a VM security boundary.
+context.process = process;
+context.require = workspaceRequire;
+context.__filename = path.join(cwd, "__opencode_js_repl__.cjs");
+context.__dirname = cwd;
+context.module = { exports: {} };
+context.exports = context.module.exports;
 
 function normalizeImageMimeType(value) {
   const mime = typeof value === "string" ? value.toLowerCase() : "";
@@ -212,14 +222,6 @@ context.tmpDir = tmpDir;
 const builtinModuleSet = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => \`node:\${name}\`),
-]);
-const deniedBuiltinModules = new Set([
-  "process",
-  "node:process",
-  "child_process",
-  "node:child_process",
-  "worker_threads",
-  "node:worker_threads",
 ]);
 const moduleSearchBases = (() => {
   const bases = [];
@@ -357,9 +359,6 @@ function resolveBareSpecifier(specifier) {
 function resolveSpecifier(specifier, referrerIdentifier = null) {
   if (specifier.startsWith("node:") || builtinModuleSet.has(specifier)) {
     const normalized = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
-    if (deniedBuiltinModules.has(specifier) || deniedBuiltinModules.has(normalized)) {
-      throw new Error(\`Importing module "\${specifier}" is not allowed in js_repl\`);
-    }
     return { kind: "builtin", specifier: \`node:\${normalized}\` };
   }
   if (isPathSpecifier(specifier)) return resolvePathSpecifier(specifier, referrerIdentifier);
@@ -426,12 +425,7 @@ async function loadLinkedFileModule(modulePath) {
   if (module.status === "unlinked") {
     await module.link(async (specifier, referrer) => {
       const resolved = resolveSpecifier(specifier, referrer?.identifier);
-      if (resolved.kind !== "file") {
-        throw new Error(
-          \`Static import "\${specifier}" is not supported from local files; use await import(...)\`,
-        );
-      }
-      return loadLinkedFileModule(resolved.path);
+      return resolved.kind === "file" ? loadLinkedFileModule(resolved.path) : loadLinkedNativeModule(resolved);
     });
   }
   return module;
@@ -484,6 +478,10 @@ function collectBindings(ast) {
       bindings.set(statement.id.name, "function");
     } else if (statement.type === "ClassDeclaration" && statement.id) {
       bindings.set(statement.id.name, "class");
+    } else if (statement.type === "ImportDeclaration") {
+      for (const specifier of statement.specifiers ?? []) {
+        if (specifier.local?.name) bindings.set(specifier.local.name, "const");
+      }
     } else if (statement.type === "ForStatement" && statement.init?.type === "VariableDeclaration") {
       if (statement.init.kind === "var") {
         for (const declaration of statement.init.declarations) {
@@ -646,7 +644,7 @@ function collectCommittedBindings(module, prior, current, explicitlyCommitted) {
 }
 
 function send(message) {
-  process.stdout.write(\`\${JSON.stringify(message)}\\n\`);
+  fs.writeSync(PROTOCOL_FD, \`\${JSON.stringify(message)}\\n\`);
 }
 
 function formatError(error) {
@@ -659,7 +657,7 @@ function scheduleFatalExit(kind, error) {
   const message = \`js_repl kernel \${kind}: \${formatError(error)}; kernel reset. Catch asynchronous errors to avoid kernel termination.\`;
   if (activeExecId) {
     try {
-      fs.writeSync(process.stdout.fd, \`\${JSON.stringify({
+      fs.writeSync(PROTOCOL_FD, \`\${JSON.stringify({
         type: "exec_result",
         id: activeExecId,
         ok: false,
@@ -742,7 +740,7 @@ async function handleExec(message) {
           return importResolved(resolveSpecifier(specifier, referrer?.identifier));
         },
       });
-      await module.link(async (specifier) => {
+      await module.link(async (specifier, referrer) => {
         if (specifier === "@prev" && previousModule) {
           const bindings = previousBindings;
           const sourceModule = previousModule;
@@ -754,7 +752,8 @@ async function handleExec(message) {
             { context },
           );
         }
-        throw new Error(\`Top-level static import "\${specifier}" is not supported; use await import(...)\`);
+        const resolved = resolveSpecifier(specifier, referrer?.identifier);
+        return resolved.kind === "file" ? loadLinkedFileModule(resolved.path) : loadLinkedNativeModule(resolved);
       });
       linked = true;
       await module.evaluate();
@@ -816,6 +815,9 @@ process.stdin.on("data", (chunk) => {
 type Attachment = { type: "file"; mime: string; url: string; filename?: string }
 type Result = { output: string; attachments: Attachment[] }
 type Pending = { id: string; resolve(result: Result): void; reject(error: Error): void }
+type KernelProcess = ChildProcessWithoutNullStreams & {
+  stdio: [NodeJS.WritableStream, NodeJS.ReadableStream, NodeJS.ReadableStream, NodeJS.ReadableStream]
+}
 type Message = {
   type: "exec_result"
   id: string
@@ -833,7 +835,7 @@ function errorMessage(error: unknown) {
 }
 
 function abortError() {
-  return new DOMException("js_repl execution aborted; kernel reset", "AbortError")
+  return new DOMException("js_repl execution aborted; kernel continues running", "AbortError")
 }
 
 function parseVersion(value: string) {
@@ -946,7 +948,7 @@ function attachments(value: unknown): Attachment[] {
 }
 
 class ReplController {
-  private child?: ChildProcessWithoutNullStreams
+  private child?: KernelProcess
   private reader?: ReadLineInterface
   private pending?: Pending
   private queue: Promise<void> = Promise.resolve()
@@ -985,10 +987,7 @@ class ReplController {
     if (this.disposed) throw new Error("js_repl controller is disposed")
     if (signal.aborted) throw abortError()
     const child = await this.ensure()
-    if (signal.aborted) {
-      await this.stop()
-      throw abortError()
-    }
+    if (signal.aborted) throw abortError()
     const id = `${this.sessionID}-${++this.request}`
     return new Promise<Result>((resolve, reject) => {
       let settled = false
@@ -1001,17 +1000,17 @@ class ReplController {
         if (error) reject(error)
         else resolve(result ?? { output: "", attachments: [] })
       }
-      const reset = (error: Error) => {
+      const abandon = (error: Error) => {
         if (settled) return
         if (this.pending?.id === id) this.pending = undefined
-        void this.stop().finally(() => finish(error))
+        finish(error)
       }
-      const onAbort = () => reset(abortError())
-      const timer = setTimeout(() => reset(new Error("js_repl execution timed out; kernel reset, rerun your request")), timeoutMs)
+      const onAbort = () => abandon(abortError())
+      const timer = setTimeout(() => abandon(new Error("js_repl execution timed out; kernel continues running and later calls will wait behind it")), timeoutMs)
       this.pending = { id, resolve: (result) => finish(undefined, result), reject: (error) => finish(error) }
       signal.addEventListener("abort", onAbort, { once: true })
       child.stdin.write(`${JSON.stringify({ type: "exec", id, code })}\n`, (error) => {
-        if (error) reset(new Error(`Failed to write to js_repl kernel: ${error.message}`))
+        if (error) this.fail(child, new Error(`Failed to write to js_repl kernel: ${error.message}`))
       })
     })
   }
@@ -1035,8 +1034,8 @@ class ReplController {
     const child = spawn(node, ["--no-warnings", "--experimental-vm-modules", kernelPath], {
       cwd: this.directory,
       env: { ...process.env, NODE_PATH: [join(replCacheDirectory(), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), OPENCODE_JS_REPL_SESSION_ID: this.sessionID, OPENCODE_JS_REPL_TMP_DIR: this.scratch, OPENCODE_JS_REPL_MERIYAH_RESOLUTION_PATH: join(replCacheDirectory(), "__opencode_js_repl__.cjs"), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), OPENCODE_JS_REPL_NODE_MODULE_DIRS: moduleDirs.join(delimiter) },
-      stdio: ["pipe", "pipe", "pipe"],
-    })
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+    }) as KernelProcess
     await new Promise<void>((resolve, reject) => {
       const onSpawn = () => { child.off("error", onError); resolve() }
       const onError = (error: Error) => { child.off("spawn", onSpawn); reject(new Error(`Failed to start js_repl kernel: ${error.message}`)) }
@@ -1044,7 +1043,8 @@ class ReplController {
       child.once("error", onError)
     })
     this.child = child
-    this.reader = createInterface({ input: child.stdout, crlfDelay: Infinity })
+    child.stdout.resume()
+    this.reader = createInterface({ input: child.stdio[3], crlfDelay: Infinity })
     this.reader.on("line", (line) => this.handleLine(child, line))
     child.stderr.setEncoding("utf8")
     child.stderr.on("data", (chunk: string) => this.handleStderr(chunk))
@@ -1053,7 +1053,7 @@ class ReplController {
     return child
   }
 
-  private handleLine(child: ChildProcessWithoutNullStreams, line: string) {
+  private handleLine(child: KernelProcess, line: string) {
     if (child !== this.child) return
     if (Buffer.byteLength(line) > MAX_PROTOCOL_LINE_BYTES) return void this.fail(child, new Error("js_repl kernel exceeded the protocol output limit"))
     let message: Message
@@ -1085,7 +1085,7 @@ class ReplController {
     while (this.stderrTail.length > 20 || Buffer.byteLength(this.stderrTail.join(" | ")) > 4096) this.stderrTail.shift()
   }
 
-  private handleClose(child: ChildProcessWithoutNullStreams, code: number | null, signal: NodeJS.Signals | null) {
+  private handleClose(child: KernelProcess, code: number | null, signal: NodeJS.Signals | null) {
     if (child !== this.child) return
     if (this.stderrFragment) this.pushStderr(this.stderrFragment)
     this.detach(child)
@@ -1096,14 +1096,14 @@ class ReplController {
     pending?.reject(new Error(`js_repl kernel exited unexpectedly (${status})${diagnostics}`))
   }
 
-  private fail(child: ChildProcessWithoutNullStreams, error: Error) {
+  private fail(child: KernelProcess, error: Error) {
     if (child !== this.child) return
     const pending = this.pending
     this.pending = undefined
     void this.stop().finally(() => pending?.reject(error))
   }
 
-  private detach(child: ChildProcessWithoutNullStreams) {
+  private detach(child: KernelProcess) {
     if (child !== this.child) return
     this.reader?.close()
     this.reader = undefined
@@ -1146,7 +1146,7 @@ async function removeController(sessionID: string) {
 }
 
 export default tool({
-  description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. Send plain JavaScript in code without markdown fences. Top-level bindings persist until js_repl_reset. Use dynamic imports such as await import('node:path') and attach images with await opencode.emitImage({ bytes, mimeType, filename? }). A timeout or cancellation resets the kernel and discards its state. This tool is not an OS sandbox. It blocks direct process, child_process, and worker_threads imports.",
+  description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. Send plain JavaScript in code without markdown fences. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), and attach images with await opencode.emitImage({ bytes, mimeType, filename? }). A timeout or cancellation ends only the tool call: the kernel and cell continue running, and later calls wait behind it. Use js_repl_reset to stop a stuck cell. This is a trusted local-code runtime, not a sandbox.",
   args: {
     code: tool.schema.string().min(1).describe("Plain JavaScript source to execute. Do not wrap it in JSON or markdown fences."),
     timeout_ms: tool.schema.number().int().min(1).max(MAX_TIMEOUT_MS).optional().describe(`Execution timeout in milliseconds. Defaults to ${DEFAULT_TIMEOUT_MS}.`),
