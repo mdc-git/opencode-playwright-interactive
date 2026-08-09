@@ -61,11 +61,11 @@ counter += 1
 console.log(counter)
 ```
 
-Top-level `const`, `let`, `var`, function, and class bindings persist between calls. Dynamic imports support Node builtins, installed workspace packages, and local ESM `.js`/`.mjs` files. Static imports are not supported; use `await import(...)`.
+Top-level `const`, `let`, `var`, function, class, and static-import bindings persist between calls. `require(...)` resolves from the workspace, while static and dynamic imports support Node builtins, installed workspace packages, and local ESM `.js`/`.mjs` files.
 
 The kernel exposes `opencode.cwd`, `opencode.homeDir`, `opencode.tmpDir`, `tmpDir`, and `opencode.emitImage(imageLike)`. Image attachments support PNG, JPEG, WebP, and GIF, with a 5 MiB limit per image and at most four images per execution.
 
-Explicitly close browser resources before resetting the REPL or ending a browser QA task. Use `js_repl_reset` when you need to discard the current session; timeouts, cancellation, fatal asynchronous errors, process crashes, and fully closing OpenCode also tear down the kernel. Native custom tools do not receive the plugin session-deletion lifecycle hook, so reset explicitly when a long-lived session no longer needs the REPL.
+Explicitly close browser resources before resetting the REPL or ending a browser QA task. A timeout or cancellation ends only that tool call: its cell continues in the kernel, and later calls wait behind it. Do not repeat an action after such a result without checking its eventual state. Use `js_repl_reset` to stop a stuck cell and discard the current session; fatal asynchronous errors, process crashes, and fully closing OpenCode also tear down the kernel. Native custom tools do not receive the plugin session-deletion lifecycle hook, so reset explicitly when a long-lived session no longer needs the REPL.
 
 ## Playwright Skill
 
@@ -96,6 +96,6 @@ Set `OPENCODE_JS_REPL_CACHE_DIR` to relocate the shared Meriyah cache and `OPENC
 
 ## Security
 
-This tool is not an OS sandbox. It blocks direct `process`, `child_process`, and `worker_threads` imports, but evaluated code can access the filesystem and network, and imported dependency code runs with the current user's privileges. Treat `permission.js_repl = "allow"` as permission to run arbitrary local code.
+This is a trusted local-code runtime, not a sandbox. Evaluated code has the current user's Node capabilities, including `process`, `require`, filesystem and network access, and `child_process` and `worker_threads` modules. Treat `permission.js_repl = "allow"` as permission to run arbitrary local code.
 
 The bundled runtime is adapted from OpenAI Codex revision `219c65dc2f7a2fdb2adef73d572189e80b7470e5`. See `tools/NOTICE.txt` and `tools/LICENSE.txt`.

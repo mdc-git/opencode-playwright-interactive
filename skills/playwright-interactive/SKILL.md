@@ -268,12 +268,13 @@ Because such controls are often the dismiss button of a frame-hosted banner, dia
 
 ## The REPL Call Budget
 
-Each `js_repl` call is killed by a default duration cap, and a killed call **hard-resets the kernel — destroying every live handle** (`playwright`, `stealth`, `page`) and forcing a full restart. Multi-step sequences (`click` page-timeout + `waitForTimeout(9000)` + networkidle) routinely blow the cap. To keep the session alive:
+Each `js_repl` call has a default duration cap. A timeout or cancellation ends only the tool call: the cell and every live handle (`playwright`, `stealth`, `page`) remain in the kernel, and later calls wait behind the unfinished cell. Multi-step sequences (`click` page-timeout + `waitForTimeout(9000)` + networkidle) routinely exceed 30 seconds. To keep the session responsive:
 
 - Set `timeout_ms` on every call that chains waits. A click’s default page timeout is 10s, so a single click+wait can consume 15–20s; two in one call often exceed 30s.
 - **Do not put successive waits in one call.** Split long flows across separate `js_repl` calls so none trips the cap.
-- After a forced reset, rerun the full startup block (it is the only `ensureWebBrowser` launcher) before touching `page`.
-- Prefer resuming a running session over a fresh one: the persistent profile makes the open page recoverable.
+- Do not repeat an action after a timeout or cancellation: the original cell may still complete. Wait for the queued result or inspect the resulting UI state.
+- To stop an indefinitely stuck cell, use `js_repl_reset`; it destroys every live handle, so rerun the full startup block before touching `page`.
+- Prefer resuming the existing session over resetting it: the persistent profile makes the open page recoverable.
 
 ## Managed Input
 
