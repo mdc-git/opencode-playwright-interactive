@@ -89,8 +89,8 @@ The `local.js-repl` plugin registers these tools:
 
 - `js_repl` runs JavaScript in a persistent Node.js kernel.
 - `js_repl_reset` clears the current session's bindings and stops its kernel.
-- `js_repl_playwright_setup` installs Playwright, Chromium and
-  rebrowser-patches in the user cache.
+- `js_repl_playwright_setup` installs rebrowser-playwright and Chromium in the
+  user cache.
 
 `js_repl` accepts `code` and an optional `timeout_ms` from 1 to 300000. The
 default is 30000 milliseconds. Send plain JavaScript without Markdown fences.
@@ -111,7 +111,9 @@ Sending the `import(...)` expression directly to `execute` produces an
 Likewise, do not put an unescaped REPL template literal inside the outer
 `` code: `...` `` wrapper. Use string concatenation in the REPL source or pass
 the source as a quoted JSON string so an inner backtick cannot terminate the
-outer wrapper.
+outer wrapper. Code Mode also cooks backslash escapes in that outer template.
+The kernel restores cooked line terminators inside quoted REPL strings before
+parsing, so common inner expressions such as `join("\n")` remain valid.
 
 ```js
 // First call
@@ -130,7 +132,8 @@ dynamic imports support Node built-ins, installed workspace packages and local
 ESM `.js` or `.mjs` files.
 
 The kernel exposes `opencode.cwd`, `opencode.homeDir`, `opencode.tmpDir`,
-`tmpDir`, `opencode.emitImage(imageLike)` and `opencode.emitText(textLike)`.
+`opencode.sessionId`, `opencode.bindBrowser(options)`, `tmpDir`,
+`opencode.emitImage(imageLike)` and `opencode.emitText(textLike)`.
 `emitText` accepts a string or `{ text }` and appends it to the tool result.
 Image attachments may be PNG, JPEG, WebP or GIF. Each image is limited to 5
 MiB, with at most four images per execution.
@@ -148,11 +151,14 @@ stops every plugin kernel.
 ## Playwright skill
 
 Call `js_repl_playwright_setup` before the first browser session. It installs
-Playwright 1.62.0 and Chromium under `~/.cache/opencode/playwright` by default
-and applies rebrowser-patches to the installed `playwright-core`, closing the
-`Runtime.enable` CDP automation leak and renaming the default utility world.
-The patch is re-applied automatically after any reinstall. The REPL then
-resolves the shared package and browser path automatically.
+rebrowser-playwright 1.52.0 and its matching Chromium under
+`~/.cache/opencode/playwright` by default. The maintained drop-in package closes
+the `Runtime.enable` CDP automation leak and renames the default utility world.
+Setup verifies both package identities on every run and applies a guarded fix
+for rebrowser's session-wide execution-context clear on child-frame navigation.
+Without that fix, navigating an ordinary iframe can destroy the main frame's
+live handles and destabilize concurrent navigation work. The REPL then resolves
+the shared package and browser path automatically.
 
 For local web apps, the skill launches standard Chromium and uses ordinary
 Playwright APIs without loading the stealth runtime. Local targets include
@@ -171,6 +177,13 @@ OpenCode sessions can run browsers at the same time. Desktop and responsive
 touch modes in one remote session share a profile, so they must run one after
 the other. Responsive touch mode does not impersonate Safari or a physical
 device.
+
+Every local and remote browser uses `opencode.bindBrowser()` to bind the
+Playwright browser, context and pages to the OpenCode session that launched it.
+Local startup exposes `localBrowserBinding` and `assertLocalPage(page)`. Remote
+startup exposes `stealth.binding` and includes the binding in
+`stealth.pageState(page)`. A closed binding fails closed and cannot adopt a
+browser or page from another session.
 
 Remote mode uses `ensureWebBrowser()` or `ensureMobileBrowser()` to create a
 Chromium session. The returned controller provides:

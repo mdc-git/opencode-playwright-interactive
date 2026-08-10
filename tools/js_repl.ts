@@ -1,7 +1,7 @@
 // Adapted from OpenAI Codex's js_repl kernel at revision 219c65d.
 // Bundled third-party notices are in tools/NOTICE.txt.
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createInterface, type Interface as ReadLineInterface } from "node:readline"
 import { delimiter, join } from "node:path"
 import { homedir, tmpdir } from "node:os"
@@ -15,7 +15,8 @@ const MAX_TIMEOUT_MS = 300_000
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_PROTOCOL_LINE_BYTES = 32 * 1024 * 1024
 const MERIYAH_VERSION = "7.0.0"
-const PLAYWRIGHT_VERSION = "1.62.0"
+const PLAYWRIGHT_VERSION = "1.52.0"
+const PLAYWRIGHT_PACKAGE = "rebrowser-playwright"
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
 const controllers = new Map<string, ReplController>()
 
@@ -92,6 +93,8 @@ const internalBindingSalt = (() => {
 const cwd = process.cwd();
 const tmpDir = process.env.OPENCODE_JS_REPL_TMP_DIR || cwd;
 const homeDir = process.env.HOME ?? null;
+const sessionId = process.env.OPENCODE_JS_REPL_SESSION_ID || null;
+let browserBindingCounter = 0;
 const workspaceRequire = createRequire(path.join(cwd, "__opencode_js_repl__.cjs"));
 
 // This is a trusted local-code runtime, not a VM security boundary.
@@ -228,7 +231,37 @@ function emitText(textLike) {
   return Promise.resolve();
 }
 
-context.opencode = Object.freeze({ cwd, homeDir, tmpDir, emitImage, emitText });
+function bindBrowser({ browser, context: browserContext, browserId, profileKind = "local" } = {}) {
+  if (!sessionId) throw new Error("Could not identify the OpenCode session for browser binding");
+  if (!browserContext || typeof browserContext.browser !== "function" || typeof browserContext.on !== "function") throw new TypeError("opencode.bindBrowser requires a Playwright BrowserContext");
+  const contextBrowser = browserContext.browser();
+  const boundBrowser = browser || contextBrowser;
+  if (boundBrowser && typeof boundBrowser.isConnected !== "function") throw new TypeError("opencode.bindBrowser received an invalid Playwright Browser");
+  if (browser && contextBrowser && contextBrowser !== browser) throw new Error("The BrowserContext does not belong to the supplied Browser");
+  let contextClosed = false;
+  browserContext.on("close", () => { contextClosed = true; });
+  const resolvedBrowserId = typeof browserId === "string" && browserId ? browserId : sessionId + ":" + profileKind + ":" + (++browserBindingCounter);
+  const binding = Object.freeze({ sessionId, browserId: resolvedBrowserId, profileKind });
+  const connected = () => !contextClosed && (!boundBrowser || boundBrowser.isConnected());
+  const assertPage = (currentPage) => {
+    if (!connected()) throw new Error("Browser " + binding.browserId + " bound to OpenCode session " + binding.sessionId + " is closed. Stop interacting and do not adopt another browser.");
+    if (!currentPage || typeof currentPage.isClosed !== "function" || currentPage.isClosed() || currentPage.context() !== browserContext) throw new Error("The target Page does not belong to browser " + binding.browserId + " bound to OpenCode session " + binding.sessionId + ".");
+    return currentPage;
+  };
+  const assertLocator = (currentPage, locator) => {
+    assertPage(currentPage);
+    if (locator && typeof locator.page === "function" && locator.page() !== currentPage) throw new Error("The target locator belongs to a different Page or browser binding");
+    return locator;
+  };
+  return Object.freeze({
+    binding,
+    assertPage,
+    assertLocator,
+    state: () => Object.freeze({ connected: connected(), binding }),
+  });
+}
+
+context.opencode = Object.freeze({ cwd, homeDir, tmpDir, sessionId, bindBrowser, emitImage, emitText });
 context.tmpDir = tmpDir;
 
 const builtinModuleSet = new Set([
@@ -584,15 +617,37 @@ function instrumentCurrentBindings(code, ast, marker) {
   return applyReplacements(code, replacements);
 }
 
-async function buildModuleSource(code) {
-  const meriyah = await meriyahPromise;
-  const ast = meriyah.parseModule(code, {
+function parseModuleSource(code, meriyah) {
+  const options = {
     next: true,
     module: true,
     ranges: true,
     loc: false,
     disableWebCompat: true,
-  });
+  };
+  let source = code;
+  for (let repairs = 0; repairs <= code.length; repairs += 1) {
+    try {
+      return { source, ast: meriyah.parseModule(source, options) };
+    } catch (error) {
+      const start = Number(error?.start);
+      if (error?.description !== "Unterminated string literal" || !Number.isInteger(start) || !["'", '"'].includes(source[start])) throw error;
+      const remainder = source.slice(start + 1);
+      const match = /[\\r\\n\\u2028\\u2029]/u.exec(remainder);
+      if (!match) throw error;
+      const lineStart = start + 1 + match.index;
+      const lineEnd = source[lineStart] === "\\r" && source[lineStart + 1] === "\\n" ? lineStart + 2 : lineStart + 1;
+      source = source.slice(0, lineStart) + "\\\\n" + source.slice(lineEnd);
+    }
+  }
+  throw new Error("Could not recover cooked line terminators in JavaScript string literals");
+}
+
+async function buildModuleSource(code) {
+  const meriyah = await meriyahPromise;
+  const parsed = parseModuleSource(code, meriyah);
+  code = parsed.source;
+  const ast = parsed.ast;
   const currentBindings = collectBindings(ast);
   const priorBindings = previousModule ? previousBindings : [];
   const markCommittedName = nextInternalBindingName();
@@ -909,6 +964,41 @@ async function exists(path: string) {
   }
 }
 
+async function packageMatches(file: string, name: string, version: string) {
+  try {
+    const value = JSON.parse(await readFile(file, "utf8")) as { name?: string; version?: string }
+    return value.name === name && value.version === version
+  } catch {
+    return false
+  }
+}
+
+async function ensureRebrowserFrameContextFix(directory: string) {
+  const framesFile = join(directory, "node_modules", "playwright-core", "lib", "server", "frames.js")
+  const chromiumPageFile = join(directory, "node_modules", "playwright-core", "lib", "server", "chromium", "crPage.js")
+  const originalClear = `    const crSession = (this._page._delegate._sessions.get(this._id) || this._page._delegate._mainFrameSession)._client;\n    crSession.emit("Runtime.executionContextsCleared");`
+  const fixedClear = `    const frameSession = this._page._delegate._sessions.get(this._id) || this._page._delegate._mainFrameSession;\n    frameSession._onFrameExecutionContextsCleared(this);`
+  const methodAnchor = `  _onExecutionContextsCleared() {\n    for (const contextId of Array.from(this._contextIdToContext.keys()))\n      this._onExecutionContextDestroyed(contextId);\n  }`
+  const fixedMethod = `${methodAnchor}\n  _onFrameExecutionContextsCleared(frame) {\n    for (const [contextId, context] of this._contextIdToContext) {\n      if (context.frame === frame)\n        this._onExecutionContextDestroyed(contextId);\n    }\n  }`
+  let frames = await readFile(framesFile, "utf8")
+  let chromiumPage = await readFile(chromiumPageFile, "utf8")
+  const clearReady = frames.includes(fixedClear)
+  const methodReady = chromiumPage.includes("  _onFrameExecutionContextsCleared(frame) {")
+  if (!clearReady) {
+    if (!frames.includes(originalClear)) throw new Error(`Could not apply the rebrowser frame-context fix: ${framesFile} has an unexpected shape`)
+    frames = frames.replace(originalClear, fixedClear)
+    await writeFile(framesFile, frames)
+  }
+  if (!methodReady) {
+    if (!chromiumPage.includes(methodAnchor)) throw new Error(`Could not apply the rebrowser frame-context fix: ${chromiumPageFile} has an unexpected shape`)
+    chromiumPage = chromiumPage.replace(methodAnchor, fixedMethod)
+    await writeFile(chromiumPageFile, chromiumPage)
+  }
+  if (!(await readFile(framesFile, "utf8")).includes(fixedClear) || !(await readFile(chromiumPageFile, "utf8")).includes("  _onFrameExecutionContextsCleared(frame) {")) {
+    throw new Error("The rebrowser frame-context fix could not be verified after installation")
+  }
+}
+
 async function run(command: string, args: string[], environment: NodeJS.ProcessEnv) {
   try {
     await execFileAsync(command, args, { encoding: "utf8", timeout: 10 * 60_000, maxBuffer: 1024 * 1024, env: environment })
@@ -1163,7 +1253,7 @@ async function removeController(sessionID: string) {
 }
 
 export default tool({
-   description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. When called from Code Mode, keep Node.js source inside tools.js_repl({ code: ... }); never send import(...) or require(...) as top-level execute orchestration code. Send plain JavaScript in code without markdown fences. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). A timeout or cancellation ends only the tool call: the kernel and cell continue running, and later calls wait behind it. Use js_repl_reset to stop a stuck cell. This is a trusted local-code runtime, not a sandbox.",
+   description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. When called from Code Mode, keep Node.js source inside tools.js_repl({ code: ... }); never send import(...) or require(...) as top-level execute orchestration code. Send plain JavaScript in code without markdown fences. The kernel restores line terminators cooked by Code Mode template literals when they occur inside quoted REPL strings. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). A timeout or cancellation ends only the tool call: the kernel and cell continue running, and later calls wait behind it. Use js_repl_reset to stop a stuck cell. This is a trusted local-code runtime, not a sandbox.",
   args: {
     code: tool.schema.string().min(1).describe("Plain Node.js source to execute in the REPL. In Code Mode this must be the code property of tools.js_repl, not top-level execute orchestration source. Do not wrap it in JSON or markdown fences."),
     timeout_ms: tool.schema.number().int().min(1).max(MAX_TIMEOUT_MS).optional().describe(`Execution timeout in milliseconds. Defaults to ${DEFAULT_TIMEOUT_MS}.`),
@@ -1188,38 +1278,33 @@ export const reset = tool({
 })
 
 export const playwright_setup = tool({
-  description: "Install Playwright and Chromium once in the shared OpenCode cache for use by js_repl across all workspaces. Also applies rebrowser-patches to playwright-core to close Runtime.enable CDP automation leaks used by the stealth runtime.",
+  description: "Install rebrowser-playwright and its matching Chromium once in the shared OpenCode cache for use by js_repl across all workspaces.",
   args: {
     force: tool.schema.boolean().optional().describe("Reinstall Playwright and Chromium even when the shared cache is already ready."),
   },
   async execute(args, context) {
-    await context.ask({ permission: "js_repl", patterns: ["playwright_setup"], always: ["playwright_setup"], metadata: { warning: "This downloads Playwright, Chromium and rebrowser-patches into a shared user cache." } })
+    await context.ask({ permission: "js_repl", patterns: ["playwright_setup"], always: ["playwright_setup"], metadata: { warning: "This downloads rebrowser-playwright and Chromium into a shared user cache." } })
     const directory = playwrightCacheDirectory()
     const marker = join(directory, `.chromium-${PLAYWRIGHT_VERSION}`)
-    const patchMarker = join(directory, `.rebrowser-patched-${PLAYWRIGHT_VERSION}`)
-    const playwrightCore = join(directory, "node_modules", "playwright-core")
+    const playwrightPackage = join(directory, "node_modules", "playwright", "package.json")
+    const playwrightCorePackage = join(directory, "node_modules", "playwright-core", "package.json")
     const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), REBROWSER_PATCHES_RUNTIME_FIX_MODE: process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE ?? "addBinding" }
     context.metadata({ title: "Set Up Shared Playwright" })
     await mkdir(directory, { recursive: true })
-    if (args.force || !(await exists(join(directory, "node_modules", "playwright", "package.json")))) {
-      await run(process.env.OPENCODE_PLAYWRIGHT_NPM_PATH ?? "npm", ["install", "--prefix", directory, `playwright@${PLAYWRIGHT_VERSION}`], environment)
-      await rm(patchMarker, { force: true })
+    const packageReady = await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)
+      && await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION)
+    if (args.force || !packageReady) {
+      await run(process.env.OPENCODE_PLAYWRIGHT_NPM_PATH ?? "npm", ["install", "--prefix", directory, `playwright@npm:${PLAYWRIGHT_PACKAGE}@${PLAYWRIGHT_VERSION}`], environment)
+      await rm(marker, { force: true })
     }
+    if (!(await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)) || !(await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION))) {
+      throw new Error(`Playwright setup did not install ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION} and its matching core package`)
+    }
+    await ensureRebrowserFrameContextFix(directory)
     if (args.force || !(await exists(marker))) {
       await run(process.env.OPENCODE_PLAYWRIGHT_NPX_PATH ?? "npx", ["--prefix", directory, "playwright", "install", "chromium"], environment)
       await writeFile(marker, "")
     }
-    // Apply rebrowser-patches to playwright-core: disables the Runtime.enable
-    // CDP leak and renames the utility world. Must be re-run after every
-    // reinstall because npm overwrites the patched driver sources.
-    if (await exists(playwrightCore) && !(await exists(patchMarker))) {
-      try {
-        await run(process.env.OPENCODE_PLAYWRIGHT_NPX_PATH ?? "npx", ["--yes", "--prefix", directory, "rebrowser-patches@latest", "patch", "--packagePath", playwrightCore], environment)
-      } catch (error) {
-        throw new Error(`rebrowser-patches failed against playwright-core ${PLAYWRIGHT_VERSION}. Stealth sessions would leak Runtime.enable automation signals until this is resolved: ${errorMessage(error)}`)
-      }
-      await writeFile(patchMarker, "")
-    }
-    return { title: "Set Up Shared Playwright", output: `Shared Playwright ${PLAYWRIGHT_VERSION}, Chromium and rebrowser-patches are ready at ${directory}.` }
+    return { title: "Set Up Shared Playwright", output: `Shared ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION}, its frame-context navigation fix and Chromium are ready at ${directory}.` }
   },
 })
