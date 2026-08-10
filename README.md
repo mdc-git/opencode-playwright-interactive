@@ -148,6 +148,12 @@ service owns the plugin, so closing the TUI may leave the kernel running. Reset
 long-lived sessions when they no longer need the REPL. Restarting the service
 stops every plugin kernel.
 
+Interactive browser sessions intentionally remain open after an agent finishes
+a task. This preserves the visible result for inspection and lets later turns
+reuse the same session. The agent closes a browser only on an explicit user
+request, for a required desktop/mobile mode switch, or before an unavoidable
+fatal kernel reset when cleanup is still possible.
+
 ## Playwright skill
 
 Call `js_repl_playwright_setup` before the first browser session. It installs
