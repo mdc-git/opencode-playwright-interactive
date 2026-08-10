@@ -33,10 +33,15 @@ const STEALTH_ARGUMENTS = Object.freeze([
   "--no-first-run",
   "--no-default-browser-check",
 ]);
+const STRUCTURAL_ROLES = Object.freeze(["search", "main", "navigation", "banner", "contentinfo", "complementary", "region", "form", "heading", "list", "listitem", "presentation", "none"]);
 const BEHAVIOR_SCHEMA = 2;
 let installedRuntime;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const settleWithin = (promise, milliseconds, fallback) => Promise.race([
+  Promise.resolve(promise).catch(() => fallback),
+  sleep(milliseconds).then(() => fallback),
+]);
 const uniform = (minimum, maximum) => minimum + Math.random() * (maximum - minimum);
 const normal = () => {
   let first = 0;
@@ -79,7 +84,7 @@ export async function installStealthRuntime({
 } = {}) {
   if (installedRuntime) return installedRuntime;
   if (!chromium?.launchPersistentContext) throw new TypeError("The shared Playwright chromium object is required");
-  if (!opencode?.homeDir && !opencode?.tmpDir) throw new TypeError("The js_repl opencode runtime object is required");
+  if ((!opencode?.homeDir && !opencode?.tmpDir) || !opencode?.sessionId || typeof opencode.bindBrowser !== "function") throw new TypeError("The session-aware js_repl opencode runtime object is required");
 
   const runtime = createRuntime({ chromium, opencode, headless, webProfileDir, mobileProfileDir });
   installedRuntime = Object.freeze(runtime);
@@ -90,6 +95,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   let writeQueue = Promise.resolve();
   let webSession;
   let mobileSession;
+  const runtimeSessionId = opencode.sessionId;
   const controllerRegistry = new Map();
   const controllerLaunches = new Map();
 
@@ -281,8 +287,8 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     updatedAt: new Date().toISOString(),
   });
 
-  const normalizeMetadata = (value) => value && value.schema === 1 && typeof value.profileId === "string" && value.profileId
-    ? { schema: 1, profileId: value.profileId, personaId: value.personaId || "", behaviorSchema: BEHAVIOR_SCHEMA, personaSchema: PERSONA_SCHEMA, createdAt: value.createdAt || new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: Number.isInteger(value.resetGeneration) ? value.resetGeneration : 0 }
+  const normalizeMetadata = (value) => value && [1, 2].includes(value.schema) && typeof value.profileId === "string" && value.profileId
+    ? { schema: 2, profileId: value.profileId, personaId: value.personaId || "", sessionId: typeof value.sessionId === "string" ? value.sessionId : "", behaviorSchema: BEHAVIOR_SCHEMA, personaSchema: PERSONA_SCHEMA, createdAt: value.createdAt || new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: Number.isInteger(value.resetGeneration) ? value.resetGeneration : 0 }
     : undefined;
 
   const assertCoherentLaunchOptions = (launchOptions, contextOptions) => {
@@ -297,9 +303,17 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     if (conflictingHeaders.length) throw new Error(`Identity-critical HTTP headers are managed by Chromium: ${[...new Set(conflictingHeaders)].join(", ")}`);
   };
 
-  const targetBox = async (currentPage, target, trialOptions) => {
+  const targetBox = async (currentPage, target, browserBinding) => {
     if (target && typeof target.boundingBox === "function") {
-      if (trialOptions && typeof target.click === "function") await target.click({ ...trialOptions, trial: true });
+      browserBinding.assertLocator(currentPage, target);
+      const semantics = await target.evaluate((element) => ({
+        role: element.getAttribute("role")?.toLowerCase() || "",
+        tag: element.tagName.toLowerCase(),
+        nativeControl: element.matches("button, a[href], input:not([type=hidden]), select, textarea, summary, [contenteditable=true]"),
+      }));
+      if (!semantics.nativeControl && (STRUCTURAL_ROLES.includes(semantics.role) || ["search", "main", "nav", "header", "footer"].includes(semantics.tag))) {
+        throw new Error(`Stealth target is a non-interactive ${semantics.role || semantics.tag} container; locate its nested control`);
+      }
       if (typeof target.isEnabled === "function" && !(await target.isEnabled())) throw new Error("Stealth target is disabled");
       await target.scrollIntoViewIfNeeded();
       const box = await target.boundingBox();
@@ -366,15 +380,18 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     assertCoherentLaunchOptions(launchOptions, contextOptions);
     const paths = stealthPaths({ dataDir });
     const existing = controllerRegistry.get(paths.root);
+    if (existing?.state() === "externally-closed") throw new Error(`The browser bound to OpenCode session ${runtimeSessionId} was closed outside the controller. This controller cannot relaunch or adopt another session's browser.`);
     if (existing && existing.state() === "open") {
       if (existing.capabilities().profileKind !== profileKind) throw new Error(`The shared stealth profile is already open in ${existing.capabilities().profileKind} mode. Close it before switching to ${profileKind} mode.`);
       return existing;
     }
     const profile = await loadBehavior({ dataDir: paths.root });
     const persona = await readRecord(paths.persona, normalizePersona, createPersona);
-    const metadata = await readRecord(paths.identityMetadata, normalizeMetadata, () => ({ schema: 1, profileId: profile.profileId, personaId: persona.personaId, behaviorSchema: BEHAVIOR_SCHEMA, personaSchema: PERSONA_SCHEMA, createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: 0 }));
+    const metadata = await readRecord(paths.identityMetadata, normalizeMetadata, () => ({ schema: 2, profileId: profile.profileId, personaId: persona.personaId, sessionId: runtimeSessionId, behaviorSchema: BEHAVIOR_SCHEMA, personaSchema: PERSONA_SCHEMA, createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: 0 }));
+    if (metadata.sessionId && metadata.sessionId !== runtimeSessionId) throw new Error(`Stealth profile ${paths.root} is bound to a different OpenCode session and cannot be adopted`);
     metadata.profileId = profile.profileId;
     metadata.personaId = persona.personaId;
+    metadata.sessionId = runtimeSessionId;
     await writeRecord(paths.identityMetadata, metadata);
     const mobile = profileKind === "mobile";
     const args = [...STEALTH_ARGUMENTS, ...(launchOptions.args || [])];
@@ -399,6 +416,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       throw new Error(`Could not open the persistent stealth profile at ${paths.userData}. Close any other session using it before retrying. ${error}`);
     }
     const browserVersion = persistentContext.browser()?.version?.() || "unknown";
+    const browserBinding = opencode.bindBrowser({ browser: persistentContext.browser(), context: persistentContext, browserId: profile.profileId, profileKind });
     const identity = Object.freeze({
       browserEngine: "chromium",
       browserVersion,
@@ -412,12 +430,14 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       screen: options.screen ? Object.freeze({ ...options.screen }) : null,
       deviceScaleFactor: mobile ? persona.mobileDeviceScaleFactor : null,
     });
+    const binding = browserBinding.binding;
 
     const stateByPage = new WeakMap();
     const livePages = new Set();
     const liveWorkers = new Set();
     const liveServiceWorkers = new Set();
     let status = "open";
+    let pageSequence = 0;
     let closePromise;
     let contextClosed = false;
     let lastManagedOrigin;
@@ -437,13 +457,13 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
         if (url.protocol === "http:" || url.protocol === "https:") lastManagedOrigin = url.origin;
       } catch {}
     };
-    const closedBrowserError = () => new Error(`Managed ${profileKind} browser is closed. Recover with ${mobile ? "mobileStealth = await ensureMobileBrowser()" : "stealth = await ensureWebBrowser()"}, then replace the page with ${mobile ? "mobilePage = mobileStealth.pages()[0] || await mobileStealth.newPage()" : "page = stealth.pages()[0] || await stealth.newPage()"}.${lastManagedOrigin ? ` The last managed origin was ${lastManagedOrigin}; navigate only to that origin and resume with real UI interaction.` : " The replacement page is blank; navigate only to the requested site origin and resume with real UI interaction."} Do not inspect or act on the previous controller or page.`);
+    const closedBrowserError = () => new Error(`Managed ${profileKind} browser ${binding.browserId} bound to OpenCode session ${binding.sessionId} is closed. This controller cannot relaunch or adopt another session's browser. Stop interacting and report that this session's browser was closed.`);
     const requireOpenBrowser = () => {
       if (status !== "open" || contextClosed) throw closedBrowserError();
     };
     const requirePage = (currentPage) => {
       requireOpenBrowser();
-      if (!currentPage || typeof currentPage.isClosed !== "function") throw new Error("The target Page is not managed by this stealth session");
+      browserBinding.assertPage(currentPage);
       const state = stateByPage.get(currentPage);
       if (!state || state.stopped || currentPage.isClosed()) throw new Error("The target Page is closed or is not managed by this stealth session. Select a current managed page or create one with stealth.newPage().");
       return state;
@@ -536,7 +556,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       }
     };
     const performClick = async (currentPage, state, target, options = {}, count = 1) => {
-      const box = await targetBox(currentPage, target, { button: options.button, modifiers: options.modifiers });
+      const box = await targetBox(currentPage, target, browserBinding);
       const point = pointFor(box, profile);
       await sleep(Math.min(1200, logNormal(profile.actionGapMean, profile.actionGapSigma)));
       await withModifiers(currentPage, options.modifiers, async () => {
@@ -557,7 +577,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     const registerPage = (currentPage) => {
       if (status !== "open" || !currentPage || currentPage.isClosed() || stateByPage.has(currentPage)) return;
       if (currentPage.context() !== persistentContext) throw new Error("Cannot register a Page from another BrowserContext");
-      const state = { x: undefined, y: undefined, busy: false, action: undefined, lastActivity: Date.now(), inventoryReadyAt: Date.now() + 1800, lastDocumentStatus: undefined, timer: undefined, stopped: false, queue: Promise.resolve(), frames: new Set(), workers: new Set(), removers: [] };
+      const state = { pageId: `${profile.profileId}:${++pageSequence}`, x: undefined, y: undefined, busy: false, action: undefined, lastActivity: Date.now(), inventoryReadyAt: Date.now() + 1800, lastDocumentStatus: undefined, timer: undefined, stopped: false, queue: Promise.resolve(), frames: new Set(), workers: new Set(), removers: [] };
       stateByPage.set(currentPage, state);
       livePages.add(currentPage);
       rememberOrigin(currentPage);
@@ -600,7 +620,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     try { addListener(persistentContext, "serviceworker", onServiceWorker); } catch {}
     const onContextClose = () => {
       contextClosed = true;
-      if (status === "open") status = "closed";
+      if (status === "open") status = "externally-closed";
       for (const currentPage of livePages) stopPage(stateByPage.get(currentPage));
       livePages.clear();
       liveWorkers.clear();
@@ -611,16 +631,55 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       requirePage(currentPage);
       if (typeof locatorForFrame !== "function") throw new TypeError("resolveVisible requires a locator factory");
       const deadline = Date.now() + clamp(Number(timeout) || 0, 0, 30000);
+      let nextSemanticProbeAt = 0;
       do {
-        const matches = [];
-        for (const frame of currentPage.frames()) {
+        const semanticQueries = [];
+        const frameMatches = await Promise.all(currentPage.frames().map(async (frame) => {
           let locator;
-          try { locator = locatorForFrame(frame); } catch { continue; }
-          const count = await locator?.count?.().catch(() => 0) || 0;
-          for (let index = 0; index < count; index += 1) if (await locator.nth(index).isVisible().catch(() => false)) matches.push({ frame, locator: locator.nth(index) });
-        }
+          try {
+            const queryFrame = new Proxy(frame, {
+              get(target, property) {
+                if (property === "getByRole") return (role, options = {}) => {
+                  semanticQueries.push({ frame, role, options });
+                  return target.getByRole(role, options);
+                };
+                const value = Reflect.get(target, property, target);
+                return typeof value === "function" ? value.bind(target) : value;
+              },
+            });
+            locator = locatorForFrame(queryFrame);
+          } catch { return []; }
+          const probeTimeout = Math.min(1000, Math.max(1, deadline - Date.now()));
+          const count = await settleWithin(locator?.count?.(), probeTimeout, 0) || 0;
+          const visibility = await Promise.all(Array.from({ length: count }, (_, index) => settleWithin(locator.nth(index).isVisible(), probeTimeout, false)));
+          return visibility.flatMap((visible, index) => visible ? [{ frame, locator: locator.nth(index) }] : []);
+        }));
+        const matches = frameMatches.flat();
         if (matches.length === 1) return Object.freeze(matches[0]);
         if (matches.length > 1) throw new Error(`Target is ambiguous across ${matches.length} visible frame matches`);
+        if (semanticQueries.length && Date.now() >= nextSemanticProbeAt) {
+          nextSemanticProbeAt = Date.now() + 500;
+          const supportedOptions = new Set(["name", "exact", "disabled", "checked", "selected"]);
+          const queries = semanticQueries.filter(({ options }) => Object.keys(options).every((key) => supportedOptions.has(key)));
+          if (queries.length) {
+            const inventory = await interactiveElements(currentPage);
+            const semanticMatches = inventory.filter((entry) => queries.some(({ frame, role, options }) => {
+              if (entry.frame !== frame || entry.role !== role) return false;
+              if (options.disabled !== undefined && entry.disabled !== options.disabled) return false;
+              if (options.checked !== undefined && entry.checked !== options.checked) return false;
+              if (options.selected !== undefined && entry.selected !== options.selected) return false;
+              if (options.name === undefined) return true;
+              if (options.name instanceof RegExp) {
+                options.name.lastIndex = 0;
+                return options.name.test(entry.name || "");
+              }
+              const expected = String(options.name);
+              return options.exact ? entry.name === expected : (entry.name || "").toLocaleLowerCase().includes(expected.toLocaleLowerCase());
+            }));
+            if (semanticMatches.length === 1) return Object.freeze({ frame: semanticMatches[0].frame, locator: semanticMatches[0].locator, semanticFallback: true });
+            if (semanticMatches.length > 1) throw new Error(`Target is ambiguous across ${semanticMatches.length} normalized semantic matches`);
+          }
+        }
         await sleep(100);
       } while (Date.now() < deadline);
       throw new Error(`Visible target did not appear in any frame within ${Math.max(0, Number(timeout) || 0)}ms. Frames: ${currentPage.frames().map((frame) => frame.url()).join(", ")}`);
@@ -629,7 +688,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       const state = requirePage(currentPage);
       const readinessDelay = state.inventoryReadyAt - Date.now();
       if (readinessDelay > 0) await sleep(readinessDelay);
-      const selector = "button, a[href], input:not([type=hidden]), select, textarea, summary, [role], [contenteditable=true], [tabindex]:not([tabindex='-1'])";
+      const selector = "button, a[href], input:not([type=hidden]), select, textarea, summary, [contenteditable=true], [role=button], [role=link], [role=checkbox], [role=radio], [role=switch], [role=textbox], [role=searchbox], [role=combobox], [role=listbox], [role=option], [role=menuitem], [role=menuitemcheckbox], [role=menuitemradio], [role=tab], [role=treeitem], [role=slider], [role=spinbutton], [role=scrollbar]";
       const frames = currentPage.frames().filter((frame) => frame === currentPage.mainFrame() || !["", "about:blank"].includes(frame.url()));
       const groups = await Promise.all(frames.map(async (frame, frameIndex) => {
         const candidates = frame.locator(selector);
@@ -642,24 +701,24 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
           const type = element.getAttribute("type")?.toLowerCase();
           const labels = element.labels ? [...element.labels].map((label) => label.textContent?.trim()).filter(Boolean).join(" ") : "";
           const name = element.getAttribute("aria-label")?.trim() || labels || element.getAttribute("alt")?.trim() || (element.textContent || "").trim() || element.getAttribute("placeholder")?.trim() || element.getAttribute("title")?.trim() || "";
-          let role = element.getAttribute("role")?.trim() || "";
-          if (!role) {
-            if (tag === "button" || tag === "summary" || ["button", "submit", "reset", "image"].includes(type)) role = "button";
-            else if (tag === "a" && element.hasAttribute("href")) role = "link";
-            else if (tag === "input" && type === "checkbox") role = "checkbox";
-            else if (tag === "input" && type === "radio") role = "radio";
-            else if (tag === "select") role = element.multiple || element.size > 1 ? "listbox" : "combobox";
-            else if (tag === "textarea" || tag === "input" || element.isContentEditable) role = "textbox";
-          }
+          let nativeRole = "";
+          if (tag === "button" || tag === "summary" || ["button", "submit", "reset", "image"].includes(type)) nativeRole = "button";
+          else if (tag === "a" && element.hasAttribute("href")) nativeRole = "link";
+          else if (tag === "input" && type === "checkbox") nativeRole = "checkbox";
+          else if (tag === "input" && type === "radio") nativeRole = "radio";
+          else if (tag === "select") nativeRole = element.multiple || element.size > 1 ? "listbox" : "combobox";
+          else if (tag === "textarea" || tag === "input" || element.isContentEditable) nativeRole = "textbox";
+          const explicitRole = element.getAttribute("role")?.trim() || "";
+          const role = nativeRole && options.structuralRoles.includes(explicitRole) ? nativeRole : explicitRole || nativeRole;
           return { index, visible, tag, type: type || "", role, name: name.slice(0, 240), disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"), checked: "checked" in element ? Boolean(element.checked) : element.getAttribute("aria-checked"), selected: "selected" in element ? Boolean(element.selected) : element.getAttribute("aria-selected"), href: element.href || "" };
-        }).filter(Boolean), { includeHidden }).catch(() => []);
+        }).filter(Boolean), { includeHidden, structuralRoles: STRUCTURAL_ROLES }).catch(() => []);
         return { frame, frameIndex, candidates, details, index: 0 };
       }));
       const entries = [];
       while (groups.some((group) => group.index < group.details.length)) for (const group of groups) if (group.index < group.details.length) { const details = group.details[group.index++]; entries.push(Object.freeze({ frame: group.frame, frameIndex: group.frameIndex, locator: group.candidates.nth(details.index), frameUrl: group.frame.url(), ...details })); }
       return Object.freeze(entries);
     };
-    const moveToTarget = async (currentPage, state, target, trialOptions) => { const box = await targetBox(currentPage, target, trialOptions); await moveToPoint(currentPage, state, pointFor(box, profile)); };
+    const moveToTarget = async (currentPage, state, target) => { const box = await targetBox(currentPage, target, browserBinding); await moveToPoint(currentPage, state, pointFor(box, profile)); };
     // Momentum scrolling: one flick launches with an impulse that decays,
     // mirroring how wheel/trackpad events arrive in bursts under hardware
     // smoothing. Frame-dense early ticks, sparse settling ticks at the tail.
@@ -693,13 +752,14 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       profile: Object.freeze({ ...profile }),
       persona: Object.freeze({ ...persona }),
       identity,
+      binding,
       dataDir: paths.root,
       pages: () => { requireOpenBrowser(); return persistentContext.pages().filter((currentPage) => stateByPage.has(currentPage)); },
       newPage: async () => { requireOpenBrowser(); const currentPage = await persistentContext.newPage(); registerPage(currentPage); return currentPage; },
-      pageState: (currentPage) => { const state = requirePage(currentPage); return Object.freeze({ registered: true, busy: state.busy, action: state.action, timerActive: Boolean(state.timer), stopped: state.stopped, lastDocumentStatus: state.lastDocumentStatus }); },
+      pageState: (currentPage) => { const state = requirePage(currentPage); return Object.freeze({ registered: true, binding, pageId: state.pageId, busy: state.busy, action: state.action, timerActive: Boolean(state.timer), stopped: state.stopped, lastDocumentStatus: state.lastDocumentStatus }); },
       managed: (currentPage) => { requirePage(currentPage); return true; },
       telemetry: () => Object.freeze({ ...telemetry }),
-      capabilities: () => Object.freeze({ state: status, profileKind, lastManagedOrigin, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, ambientInput: false, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: identity.deviceScaleFactor, userAgent: undefined, identity, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, runtimeCdpPatch: "rebrowser-patches (applied to playwright-core at setup; verify with stealth-audit)", automationControlledFlag: false, standardPlaywrightProtocol: true, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
+      capabilities: () => Object.freeze({ state: status, binding, profileKind, lastManagedOrigin, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, ambientInput: false, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: identity.deviceScaleFactor, userAgent: undefined, identity, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, runtimeCdpPatch: "rebrowser-playwright (installed as the shared Playwright driver; verify with stealth-audit)", automationControlledFlag: false, standardPlaywrightProtocol: true, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
       resolveVisible,
       interactiveElements,
       moveTo: (currentPage, target) => queueAction(currentPage, "moveTo", (state) => moveToTarget(currentPage, state, target)),
@@ -711,17 +771,17 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
         ? wheel(currentPage, 0, targetOrDelta)
         : Number.isFinite(deltaY)
           ? wheel(currentPage, 0, deltaY, targetOrDelta)
-          : queueAction(currentPage, "scroll", async (state) => { if (!targetOrDelta || typeof targetOrDelta.scrollIntoViewIfNeeded !== "function") throw new TypeError("Stealth scroll requires a Locator or numeric delta"); await targetOrDelta.scrollIntoViewIfNeeded(); await moveToTarget(currentPage, state, targetOrDelta); }),
-      dragTo: (currentPage, source, target) => queueAction(currentPage, "dragTo", async (state) => { await moveToTarget(currentPage, state, source, { button: "left" }); if (typeof source.dragTo !== "function") throw new TypeError("Stealth dragTo requires Locator targets"); await source.dragTo(target); }),
+          : queueAction(currentPage, "scroll", async (state) => { if (!targetOrDelta || typeof targetOrDelta.scrollIntoViewIfNeeded !== "function") throw new TypeError("Stealth scroll requires a Locator or numeric delta"); browserBinding.assertLocator(currentPage, targetOrDelta); await targetOrDelta.scrollIntoViewIfNeeded(); await moveToTarget(currentPage, state, targetOrDelta); }),
+      dragTo: (currentPage, source, target) => queueAction(currentPage, "dragTo", async (state) => { browserBinding.assertLocator(currentPage, target); await moveToTarget(currentPage, state, source); if (typeof source.dragTo !== "function") throw new TypeError("Stealth dragTo requires Locator targets"); await source.dragTo(target); }),
       type: (currentPage, target, text) => queueAction(currentPage, "type", async (state) => { await moveToTarget(currentPage, state, target); await target.focus(); await typeText(currentPage, text); }),
-      fill: (currentPage, target, text) => queueAction(currentPage, "fill", async (state) => { if (typeof target.focus !== "function") throw new TypeError("Stealth fill requires a Locator target"); if (typeof target.isEditable === "function" && !(await target.isEditable())) throw new Error("Stealth fill target is not editable"); await moveToTarget(currentPage, state, target); await target.focus(); await currentPage.keyboard.press("Control+A"); await currentPage.keyboard.press("Backspace"); await typeText(currentPage, text); }),
+      fill: (currentPage, target, text) => queueAction(currentPage, "fill", async (state) => { if (typeof target.focus !== "function") throw new TypeError("Stealth fill requires a Locator target"); browserBinding.assertLocator(currentPage, target); if (typeof target.isEditable === "function" && !(await target.isEditable())) throw new Error("Stealth fill target is not editable"); await moveToTarget(currentPage, state, target); await target.focus(); await currentPage.keyboard.press("Control+A"); await currentPage.keyboard.press("Backspace"); await typeText(currentPage, text); }),
       pressText: (currentPage, text) => queueAction(currentPage, "pressText", () => typeText(currentPage, text)),
       press: (currentPage, key) => queueAction(currentPage, "press", async () => currentPage.keyboard.press(key, { delay: uniform(profile.keyHoldMin, profile.keyHoldMax) })),
       focus: (currentPage, target) => queueAction(currentPage, "focus", async (state) => { await moveToTarget(currentPage, state, target); await target.focus(); }),
-      check: (currentPage, target) => queueAction(currentPage, "check", async (state) => { if (!(await target.isChecked())) await performClick(currentPage, state, target); }),
-      uncheck: (currentPage, target) => queueAction(currentPage, "uncheck", async (state) => { if (await target.isChecked()) await performClick(currentPage, state, target); }),
-      selectOption: (currentPage, target, values) => queueAction(currentPage, "selectOption", async (state) => { await moveToTarget(currentPage, state, target, { button: "left" }); await target.focus(); await sleep(uniform(80, 180)); await target.selectOption(values); }),
-      tap: (currentPage, target) => { if (!mobile) throw new Error("Stealth tap requires an active mobile/touch session"); return queueAction(currentPage, "tap", async (state) => { const box = await targetBox(currentPage, target); const point = pointFor(box, profile); await sleep(uniform(120, 300)); await moveToPoint(currentPage, state, point); await currentPage.touchscreen.tap(point.x, point.y); }); },
+      check: (currentPage, target) => queueAction(currentPage, "check", async (state) => { browserBinding.assertLocator(currentPage, target); if (!(await target.isChecked())) await performClick(currentPage, state, target); }),
+      uncheck: (currentPage, target) => queueAction(currentPage, "uncheck", async (state) => { browserBinding.assertLocator(currentPage, target); if (await target.isChecked()) await performClick(currentPage, state, target); }),
+      selectOption: (currentPage, target, values) => queueAction(currentPage, "selectOption", async (state) => { await moveToTarget(currentPage, state, target); await target.focus(); await sleep(uniform(80, 180)); await target.selectOption(values); }),
+      tap: (currentPage, target) => { if (!mobile) throw new Error("Stealth tap requires an active mobile/touch session"); return queueAction(currentPage, "tap", async (state) => { const box = await targetBox(currentPage, target, browserBinding); const point = pointFor(box, profile); await sleep(uniform(120, 300)); await moveToPoint(currentPage, state, point); await currentPage.touchscreen.tap(point.x, point.y); }); },
       think: (currentPage, milliseconds) => queueAction(currentPage, "think", () => sleep(clamp(Number(milliseconds) || 0, 0, 300000))),
       screenshot: (currentPage, options) => queueAction(currentPage, "screenshot", async (state) => { state.paused = true; try { return await currentPage.screenshot(options); } finally { state.paused = false; } }),
       stop: (currentPage) => stopPage(requirePage(currentPage)),
@@ -742,6 +802,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   const ensureController = async (kind, options) => {
     const current = kind === "mobile" ? mobileSession : webSession;
     if (current && current.state() === "open") return current;
+    if (current && current.state() === "externally-closed") throw new Error(`The ${kind} browser bound to OpenCode session ${runtimeSessionId} was closed outside the controller. Refusing to relaunch or adopt another browser.`);
     const root = path.resolve(options.dataDir || path.join(opencode.tmpDir || opencode.homeDir, "stealth"));
     const key = `${kind}:${root}`;
     if (!controllerLaunches.has(key)) controllerLaunches.set(key, createStealthController(options).finally(() => controllerLaunches.delete(key)));

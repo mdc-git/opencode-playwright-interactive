@@ -35,7 +35,7 @@ return await tools.js_repl({
 });
 ```
 
-The outer `code: ` template literal cannot contain an unescaped backtick. Before wrapping a REPL snippet, replace any inner template literal with string concatenation or encode the complete snippet as a quoted JSON string. The agent **MUST NOT** nest a REPL template literal such as `` `${value}` `` inside the outer Code Mode template literal; Code Mode will parse the inner backtick as the end of `code` and fail before `js_repl` runs.
+The outer `code: ` template literal cannot contain an unescaped backtick. Before wrapping a REPL snippet, replace any inner template literal with string concatenation or encode the complete snippet as a quoted JSON string. The agent **MUST NOT** nest a REPL template literal such as `` `${value}` `` inside the outer Code Mode template literal; Code Mode will parse the inner backtick as the end of `code` and fail before `js_repl` runs. Code Mode also cooks backslash escapes in the outer template; the REPL boundary restores cooked line terminators inside quoted strings before parsing, so inner expressions such as `join("\n")` work without a manual retry.
 
 The agent **MUST NOT** send a REPL example directly as `execute` orchestration code. An `execute` error saying `ImportExpression is not supported` means this routing rule was violated; retry by moving the unchanged source into `tools.js_repl({ code: ... })`, not by rewriting or removing the import.
 
@@ -78,7 +78,10 @@ var HEADLESS = false;
 var browser = await chromium.launch({ headless: HEADLESS });
 var context = await browser.newContext();
 var page = await context.newPage();
-console.log("Standard Chromium opened");`,
+var localBrowserSession = opencode.bindBrowser({ browser, context, profileKind: "local" });
+var localBrowserBinding = localBrowserSession.binding;
+var assertLocalPage = localBrowserSession.assertPage;
+console.log("Standard Chromium opened", localBrowserBinding);`,
   timeout_ms: 30000,
 });
 ```
@@ -138,6 +141,7 @@ if (
   stealthCapabilities.managedInput !== true ||
   stealthCapabilities.persistentIdentity !== true ||
   stealthCapabilities.automaticPagesAndPopups !== true ||
+  stealthCapabilities.binding?.sessionId !== opencode.sessionId ||
   stealthCapabilities.identity?.browserIdentity !== "native" ||
   stealthCapabilities.identity?.userAgentOverride !== false ||
   stealthCapabilities.identity?.automationControlledOverride !== true
@@ -157,6 +161,8 @@ For managed remote startup, set `HEADLESS = true` only when the environment has 
 ## Standard Local Web Rules
 
 - Use ordinary Playwright APIs directly, such as `page.getByRole()`, `locator.click()`, `locator.fill()`, `page.mouse`, `page.keyboard`, `context.pages()`, and `context.newPage()`.
+- `opencode.bindBrowser()` provides the shared session-binding checks used by local and managed remote mode. `localBrowserBinding` identifies the OpenCode session and standard Chromium process. Call `assertLocalPage(page)` before every interaction call and after any page, context or browser lifecycle event. It rejects closed pages and pages from another context or browser.
+- If the bound standard Chromium browser is closed or disconnected, stop. Do not launch a replacement, connect over CDP, enumerate other browsers or reuse a page from another context. A new browser may be opened only after the user explicitly requests it and the REPL has been reset.
 - Use `page.screenshot()` for captures and `browser.close()` for cleanup.
 - Do not use any `stealth`, `mobileStealth`, `ensureWebBrowser`, or `ensureMobileBrowser` APIs.
 - Before every local-mode `tools.js_repl` call, inspect its `code` payload. If it contains a stealth-runtime identifier such as `stealth`, `mobileStealth`, `interactiveElements`, or `resolveVisible`, do not execute it; replace it with the ordinary Playwright equivalent.
@@ -172,6 +178,7 @@ The managed-controller sections from **Scrolling** through **Mobile** apply only
 - Use controller methods with an explicit `Page` for behavior-sensitive input.
 - Direct locator, mouse, keyboard, touchscreen, and DOM mutation calls are ordinary unmanaged Playwright and do not receive behavioral shaping.
 - Each OpenCode session gets its own Chrome profile under its unique `opencode.tmpDir`, so multiple OpenCode sessions can run browsers simultaneously without conflict. Desktop and mobile within one session share that session's profile and must run sequentially.
+- `stealth.binding` and `stealth.pageState(page)` identify the OpenCode session, managed browser and managed page. Before resuming after any browser lifecycle change, the agent **MUST** verify that the active controller and page report the same binding. A controller rejects pages, locators and profile metadata from another session.
 - Never use a personal Chrome profile.
 
 ### Authorization And Bot Controls
@@ -185,7 +192,7 @@ Managed remote mode improves interaction consistency; it does not authorize acce
 - If an authorized flow requires a real interactive challenge, pause in headed mode and ask the user to complete it. Resume only after the user confirms completion; never inspect or reuse challenge tokens.
 - Keep retries bounded to ordinary transient application failures. A retry **MUST NOT** be used to search for a more favorable bot score or access decision.
 
-The runtime keeps the native Chromium user agent. The shared Playwright driver is patched with rebrowser-patches at setup (closing the `Runtime.enable` CDP leak and renaming the utility world), and Chromium always launches with `--disable-blink-features=AutomationControlled`. The runtime rejects caller-supplied identity-critical launch options, context options, HTTP headers, and Chromium arguments rather than combining contradictory browser, locale, viewport, device, or automation claims. Mobile mode is responsive touch emulation in Chromium, not Safari or physical-device impersonation. Managed input is task-bound: the runtime emits no ambient pointer movement while idle.
+The runtime keeps the native Chromium user agent. Setup installs the maintained rebrowser-playwright drop-in package, which closes the `Runtime.enable` CDP leak and renames the utility world, plus a guarded correction that scopes child-frame execution-context cleanup to that frame instead of clearing the whole CDP session. Chromium always launches with `--disable-blink-features=AutomationControlled`. The runtime rejects caller-supplied identity-critical launch options, context options, HTTP headers, and Chromium arguments rather than combining contradictory browser, locale, viewport, device, or automation claims. Mobile mode is responsive touch emulation in Chromium, not Safari or physical-device impersonation. Managed input is task-bound: the runtime emits no ambient pointer movement while idle.
 
 ### Diagnostics And Sensitive Artifacts
 
@@ -235,23 +242,13 @@ Use managed scrolling only when the current DOM/source does not already answer t
 
 Passing a locator without a delta, `await stealth.scroll(page, targetLocator)`, preserves the existing behavior of bringing that target into view. Do not send raw mouse-wheel calls or script `scrollTop`; use the controller method so scrolling stays managed.
 
-## Closed Browser Recovery
+## Closed Browser Isolation
 
-If a user closes the Chromium window or browser process, the managed context and every former `page` handle are gone. The controller reports this explicitly as `Managed desktop browser is closed` or `Managed mobile browser is closed`. This is **not** a navigation, selector, popup, screenshot, or stale-page diagnostic.
+If a user closes the Chromium window or browser process, the managed context and every former `page` handle are gone. The controller enters `externally-closed` state and reports the session and browser binding that was closed. This is **not** a navigation, selector, popup, screenshot, or stale-page diagnostic.
 
-On that error, the agent **MUST NOT** inspect `stealth.pages()`, screenshot, create a page, navigate, or retry an action through the closed controller. It **MUST** record the old controller's `lastManagedOrigin`, then immediately replace the handles through the existing launcher without rerunning Playwright setup or the full startup block:
+On that error, the agent **MUST NOT** call `ensureWebBrowser()` or `ensureMobileBrowser()`, inspect pages, screenshot, create a page, navigate, retry an action or use any other visible Chromium window. It **MUST** stop and report that the browser bound to this OpenCode session was closed. The runtime refuses to relaunch from that controller or adopt a browser owned by another session.
 
-```js
-var recoveryOrigin = stealth.capabilities().lastManagedOrigin;
-stealth = await ensureWebBrowser();
-context = stealth.context;
-browser = context.browser();
-page = stealth.pages()[0] || await stealth.newPage();
-if (recoveryOrigin) await page.goto(recoveryOrigin, { waitUntil: "domcontentloaded" });
-console.log("Managed stealth browser reopened", stealth.capabilities());
-```
-
-The replacement tab is blank by design. The preserved value is an origin only, never a deep link. After its root page loads, inventory the visible controls and resume through managed UI interaction. For mobile, use `mobileStealth = await ensureMobileBrowser()` and replace `mobileContext` and `mobilePage` the same way. Do not assume the browser retained the previous URL path, form values, tabs, or pending navigation.
+A new browser may be opened only after the user explicitly requests it. Reset the REPL, rerun setup and the complete startup block, then verify the new `stealth.binding` before navigating. The new controller remains scoped to the same OpenCode session and its own profile.
 
 ## Tabs And Navigation
 
@@ -264,7 +261,7 @@ var pagesBeforeClick = new Set(stealth.pages());
 await stealth.click(page, navigationLocator);
 
 var openedPages = [];
-var navigationDeadline = Date.now() + 1500;
+var navigationDeadline = Date.now() + 5000;
 while (Date.now() < navigationDeadline) {
   openedPages = stealth.pages().filter((candidate) => !pagesBeforeClick.has(candidate));
   if (openedPages.length || (!pageBeforeClick.isClosed() && pageBeforeClick.url() !== urlBeforeClick)) break;
@@ -280,7 +277,7 @@ var navigationKind = openedPages.length
 if (openedPages.length === 1) page = openedPages[0];
 else page = pageBeforeClick;
 if (navigationKind !== "no-navigation" && !page.isClosed()) {
-  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
 }
 console.log("Click outcome:", navigationKind, "pages:", stealth.pages().map((candidate) => candidate.url()));
 ```
@@ -337,7 +334,7 @@ await stealth.click(page, page.getByRole("button", { name: "Continue" }));
 
 A control you can see on screen may live in a same-origin or cross-origin iframe, and child frames may attach asynchronously after `domcontentloaded`. Absence of an element from the main-frame DOM is **never** evidence that a visible control is absent from the browser UI. In particular, cookie/consent/data-protection banners are commonly hosted in a third-party iframe (a "CMP") precisely to keep them out of the main document.
 
-When the exact accessible name is already known, resolve it across current and newly attached frames through the controller:
+When the exact accessible name is already known, resolve it across current and newly attached frames through the controller. If a site puts an invalid structural ARIA role on a native control, `resolveVisible()` also checks the normalized interactive inventory and returns its controller-owned locator when that semantic match is unique:
 
 ```js
 var resolvedTarget = await stealth.resolveVisible(
@@ -358,9 +355,15 @@ console.log(interactive.map((entry, index) =>
 ).join("\n"));
 ```
 
-The agent **MUST** read the complete inventory and identify the intended entry semantically. Before that review it **MUST NOT** filter entries by role, tag, frame, URL, guessed keyword, or language-specific regex; controls that look like buttons may be links or custom-role elements. Once identified, interact with the returned locator directly, for example `await stealth.click(page, interactive[index].locator)`. If no inventory entry clearly fits the request, capture and visually inspect the required full-page screenshot; use its actual visible wording with `stealth.resolveVisible()` rather than guessing another selector. If a frame or control attaches after the snapshot, take one fresh complete inventory rather than waiting for arbitrary DOM stability.
+The agent **MUST** read the complete inventory and identify the intended entry semantically. Before that review it **MUST NOT** filter entries by role, tag, frame, URL, guessed keyword, or language-specific regex; controls that look like buttons may be links or custom-role elements. Once identified, retain and interact with the returned locator directly, for example `var target = interactive[index]; await stealth.click(page, target.locator)`. It **MUST NOT** discard that locator and reconstruct `getByRole()` from the reported role because the inventory may normalize invalid site ARIA to native control semantics. If no inventory entry clearly fits the request, capture and visually inspect the required full-page screenshot; use its actual visible wording with `stealth.resolveVisible()` rather than guessing another selector. If a frame or control attaches after the snapshot, take one fresh complete inventory rather than waiting for arbitrary DOM stability.
 
 The agent **MUST NOT** conclude that a requested visible control does not exist after querying only the main frame. It **MUST NOT** inspect frames one by one across multiple tool calls when these controller methods can establish the result once.
+
+### Structural Containers Are Not Controls
+
+ARIA landmarks and structural roles such as `search`, `main`, `navigation`, `banner`, `region`, `heading`, `list`, and `presentation` normally describe containers. The agent **MUST NOT** click, fill, or otherwise act on a structural element with one of these roles. It must locate the nested `button`, `link`, `textbox`, `searchbox`, or `combobox` instead.
+
+Some sites incorrectly put a structural role on a native control. For example, an `<a href="/search" role="search">` is still an actionable link because it has native link behavior. `interactiveElements()` keeps such controls and reports their native role while excluding plain landmarks and focusable content containers. The reported native role is selection evidence, not a valid `getByRole()` query for malformed site markup; use the returned locator. If a screenshot shows a search affordance but the inventory has no matching control, use the visible wording to resolve a nested actionable role across frames. If that still produces no clear target, follow **Stuck Or Guessing** rather than clicking the surrounding container.
 
 ## Target Diagnostics
 
@@ -399,10 +402,15 @@ Because `locator.evaluate()` runs in the target's own realm, this single inspect
 A **dismiss action — clicking an accept/reject/close control — often deletes the very element (and its parent frame or overlay) that was just clicked.** Accepting a cookie banner tears down the CMP iframe; closing a modal removes the dialog. Playwright's `click()` then keeps waiting on a now-gone element and can raise a timeout *even though the click worked*. A timeout after such an action is therefore **not proof of failure**: a click that succeeded might still surface as a timeout.
 
 ```js
-// Trust the outcome, not the throw. Click, then verify by the absence of the banner:
+// Run the dismiss action in its own js_repl call.
 try {
   await stealth.click(page, target.locator, { timeout: 5000 });
 } catch (e) { /* click may still have taken effect */ }
+```
+
+Then verify the result in a separate `js_repl` call so an unexpectedly slow inventory cannot keep the action cell running:
+
+```js
 await page.waitForTimeout(1200);
 var stillThere = await stealth.interactiveElements(page)
   .then((list) => list.filter((e) => /Einverstanden|Alle akzeptieren/i.test(e.name || "")))
@@ -421,6 +429,7 @@ Each `js_repl` call has a default duration cap. A timeout or cancellation ends o
 - Set `timeout_ms` on every call that chains waits. A click’s default page timeout is 10s, so a single click+wait can consume 15–20s; two in one call often exceed 30s.
 - **Do not put successive waits in one call.** Split long flows across separate `js_repl` calls so none trips the cap.
 - Do not repeat an action after a timeout or cancellation: the original cell may still complete. Wait for the queued result or inspect the resulting UI state.
+- If the action call and one short follow-up state query both time out, the action queue is blocked. Use `js_repl_reset` immediately. Do not enqueue a screenshot, another inventory, or a modified retry behind the blocked action.
 - To stop an indefinitely stuck cell, use `js_repl_reset`; it destroys every live handle, so rerun the full startup block before touching `page`.
 - Prefer resuming the existing session over resetting it: the persistent profile makes the open page recoverable.
 
