@@ -1050,7 +1050,7 @@ class ReplController {
     ]
     const child = spawn(node, ["--no-warnings", "--experimental-vm-modules", kernelPath], {
       cwd: this.directory,
-      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), OPENCODE_JS_REPL_SESSION_ID: this.sessionID, OPENCODE_JS_REPL_TMP_DIR: this.scratch, OPENCODE_JS_REPL_MERIYAH_RESOLUTION_PATH: join(replCacheDirectory(), "__opencode_js_repl__.cjs"), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), OPENCODE_JS_REPL_NODE_MODULE_DIRS: moduleDirs.join(delimiter) },
+      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), OPENCODE_JS_REPL_SESSION_ID: this.sessionID, OPENCODE_JS_REPL_TMP_DIR: this.scratch, OPENCODE_JS_REPL_MERIYAH_RESOLUTION_PATH: join(replCacheDirectory(), "__opencode_js_repl__.cjs"), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), REBROWSER_PATCHES_RUNTIME_FIX_MODE: process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE ?? "addBinding", OPENCODE_JS_REPL_NODE_MODULE_DIRS: moduleDirs.join(delimiter) },
       stdio: ["pipe", "pipe", "pipe", "pipe"],
     }) as KernelProcess
     await new Promise<void>((resolve, reject) => {
@@ -1188,24 +1188,38 @@ export const reset = tool({
 })
 
 export const playwright_setup = tool({
-  description: "Install Playwright and Chromium once in the shared OpenCode cache for use by js_repl across all workspaces.",
+  description: "Install Playwright and Chromium once in the shared OpenCode cache for use by js_repl across all workspaces. Also applies rebrowser-patches to playwright-core to close Runtime.enable CDP automation leaks used by the stealth runtime.",
   args: {
     force: tool.schema.boolean().optional().describe("Reinstall Playwright and Chromium even when the shared cache is already ready."),
   },
   async execute(args, context) {
-    await context.ask({ permission: "js_repl", patterns: ["playwright_setup"], always: ["playwright_setup"], metadata: { warning: "This downloads Playwright and Chromium into a shared user cache." } })
+    await context.ask({ permission: "js_repl", patterns: ["playwright_setup"], always: ["playwright_setup"], metadata: { warning: "This downloads Playwright, Chromium and rebrowser-patches into a shared user cache." } })
     const directory = playwrightCacheDirectory()
     const marker = join(directory, `.chromium-${PLAYWRIGHT_VERSION}`)
-    const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory() }
+    const patchMarker = join(directory, `.rebrowser-patched-${PLAYWRIGHT_VERSION}`)
+    const playwrightCore = join(directory, "node_modules", "playwright-core")
+    const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), REBROWSER_PATCHES_RUNTIME_FIX_MODE: process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE ?? "addBinding" }
     context.metadata({ title: "Set Up Shared Playwright" })
     await mkdir(directory, { recursive: true })
     if (args.force || !(await exists(join(directory, "node_modules", "playwright", "package.json")))) {
       await run(process.env.OPENCODE_PLAYWRIGHT_NPM_PATH ?? "npm", ["install", "--prefix", directory, `playwright@${PLAYWRIGHT_VERSION}`], environment)
+      await rm(patchMarker, { force: true })
     }
     if (args.force || !(await exists(marker))) {
       await run(process.env.OPENCODE_PLAYWRIGHT_NPX_PATH ?? "npx", ["--prefix", directory, "playwright", "install", "chromium"], environment)
       await writeFile(marker, "")
     }
-    return { title: "Set Up Shared Playwright", output: `Shared Playwright ${PLAYWRIGHT_VERSION} and Chromium are ready at ${directory}.` }
+    // Apply rebrowser-patches to playwright-core: disables the Runtime.enable
+    // CDP leak and renames the utility world. Must be re-run after every
+    // reinstall because npm overwrites the patched driver sources.
+    if (await exists(playwrightCore) && !(await exists(patchMarker))) {
+      try {
+        await run(process.env.OPENCODE_PLAYWRIGHT_NPX_PATH ?? "npx", ["--yes", "--prefix", directory, "rebrowser-patches@latest", "patch", "--packagePath", playwrightCore], environment)
+      } catch (error) {
+        throw new Error(`rebrowser-patches failed against playwright-core ${PLAYWRIGHT_VERSION}. Stealth sessions would leak Runtime.enable automation signals until this is resolved: ${errorMessage(error)}`)
+      }
+      await writeFile(patchMarker, "")
+    }
+    return { title: "Set Up Shared Playwright", output: `Shared Playwright ${PLAYWRIGHT_VERSION}, Chromium and rebrowser-patches are ready at ${directory}.` }
   },
 })

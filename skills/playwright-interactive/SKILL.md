@@ -140,7 +140,7 @@ if (
   stealthCapabilities.automaticPagesAndPopups !== true ||
   stealthCapabilities.identity?.browserIdentity !== "native" ||
   stealthCapabilities.identity?.userAgentOverride !== false ||
-  stealthCapabilities.identity?.automationControlledOverride !== false
+  stealthCapabilities.identity?.automationControlledOverride !== true
 ) {
   await stealth.close().catch(() => {});
   throw new Error("Managed stealth capability verification failed");
@@ -185,7 +185,7 @@ Managed remote mode improves interaction consistency; it does not authorize acce
 - If an authorized flow requires a real interactive challenge, pause in headed mode and ask the user to complete it. Resume only after the user confirms completion; never inspect or reuse challenge tokens.
 - Keep retries bounded to ordinary transient application failures. A retry **MUST NOT** be used to search for a more favorable bot score or access decision.
 
-The runtime keeps the native Chromium user agent and automation state. It rejects caller-supplied identity-critical launch options, context options, HTTP headers, and Chromium arguments rather than combining contradictory browser, locale, viewport, device, or automation claims. Mobile mode is responsive touch emulation in Chromium, not Safari or physical-device impersonation. Managed input is task-bound: the runtime emits no ambient pointer movement while idle.
+The runtime keeps the native Chromium user agent. The shared Playwright driver is patched with rebrowser-patches at setup (closing the `Runtime.enable` CDP leak and renaming the utility world), and Chromium always launches with `--disable-blink-features=AutomationControlled`. The runtime rejects caller-supplied identity-critical launch options, context options, HTTP headers, and Chromium arguments rather than combining contradictory browser, locale, viewport, device, or automation claims. Mobile mode is responsive touch emulation in Chromium, not Safari or physical-device impersonation. Managed input is task-bound: the runtime emits no ambient pointer movement while idle.
 
 ### Diagnostics And Sensitive Artifacts
 
@@ -530,4 +530,4 @@ Wait for `Playwright session closed` before resetting the REPL. Normal remote-mo
 
 ## Remote Stealth Limits
 
-It improves persistent identity, lifecycle consistency, task-bound managed input, and identity coherence, but does not guarantee undetectability. It intentionally does not patch CDP, alter Chromium's native automation disclosure, spoof another browser, generate ambient input, rotate network identity, or manipulate challenge systems. Standard Playwright protocol/runtime signals and network, TLS, GPU, OS, profile-history, worker-realm, and long-horizon behavioral signals remain outside skill control.
+It improves persistent identity, lifecycle consistency, task-bound humanized input, and identity coherence, and it closes the known Playwright protocol leaks (Runtime.enable, utility-world naming) plus Chromium's automation-controlled disclosure, but it does not guarantee undetectability. It does not spoof another browser, generate ambient input, rotate network identity, or manipulate challenge systems. TLS/HTTP-2 fingerprinting, GPU and OS-level signals, profile history, worker and service-worker realms, and long-horizon behavioral coherence remain outside skill control.
