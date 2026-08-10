@@ -163,7 +163,7 @@ For managed remote startup, set `HEADLESS = true` only when the environment has 
 - Use ordinary Playwright APIs directly, such as `page.getByRole()`, `locator.click()`, `locator.fill()`, `page.mouse`, `page.keyboard`, `context.pages()`, and `context.newPage()`.
 - `opencode.bindBrowser()` provides the shared session-binding checks used by local and managed remote mode. `localBrowserBinding` identifies the OpenCode session and standard Chromium process. Call `assertLocalPage(page)` before every interaction call and after any page, context or browser lifecycle event. It rejects closed pages and pages from another context or browser.
 - If the bound standard Chromium browser is closed or disconnected, stop. Do not launch a replacement, connect over CDP, enumerate other browsers or reuse a page from another context. A new browser may be opened only after the user explicitly requests it and the REPL has been reset.
-- Use `page.screenshot()` for captures and `browser.close()` for cleanup.
+- Use `page.screenshot()` for captures. Call `browser.close()` only when the user explicitly asks to close the browser or before an unavoidable fatal reset while the kernel is still responsive. Normal task completion is not cleanup.
 - Do not use any `stealth`, `mobileStealth`, `ensureWebBrowser`, or `ensureMobileBrowser` APIs.
 - Before every local-mode `tools.js_repl` call, inspect its `code` payload. If it contains a stealth-runtime identifier such as `stealth`, `mobileStealth`, `interactiveElements`, or `resolveVisible`, do not execute it; replace it with the ordinary Playwright equivalent.
 - For mobile-sized local QA, create a normal context with the required viewport and touch options rather than using the stealth mobile controller.
@@ -462,7 +462,7 @@ Available methods include `resolveVisible`, `interactiveElements`, `moveTo`, `cl
 
 Managed mobile mode is a Chromium responsive-touch cohort with a 390x844 viewport, matching screen dimensions, and device scale factor 3. It deliberately retains Chromium's native version-coherent user agent instead of claiming to be iPhone Safari.
 
-Close desktop first when using the session profile, then use the existing runtime:
+Desktop and mobile cannot share the session profile concurrently. Only when the user explicitly requests a switch to mobile, close desktop first and then use the existing runtime:
 
 ```js
 await stealth.close();
@@ -523,9 +523,18 @@ Electron is always separate from Chromium stealth and uses the Electron startup 
 
 Do not create scratch pages from an Electron context. Reload renderer-only changes with `appWindow.reload()` and relaunch for main-process, preload, startup, or process-ownership changes.
 
-## Cleanup
+## Browser Persistence And Explicit Close
 
-Always close resources before `js_repl_reset`, ending the task, or quitting OpenCode:
+Browser and Electron sessions remain open after the requested task is complete so the user can inspect the result and continue in a later turn. The agent **MUST NOT** call `stealth.close()`, `mobileStealth.close()`, `browser.close()`, `context.close()`, `electronApp.close()`, `js_repl_reset`, or the cleanup block below merely because it is about to answer, has finished verification, has encountered a recoverable site error, or is ending the task. It **MUST NOT** print `Playwright session closed` unless it actually closed the session for one of the allowed reasons.
+
+Closing is allowed only when:
+
+- The user explicitly asks to close the browser or application.
+- The user explicitly requests a desktop/mobile mode switch that requires closing the active profile first.
+- An unrecoverable blocked or fatally corrupted kernel requires `js_repl_reset`. If the kernel still accepts calls, close owned resources first. If it is blocked, reset directly rather than enqueueing cleanup behind the blocked cell.
+- Startup capability verification fails before a usable managed session is established.
+
+For an explicit close request or a responsive fatal-reset path, close only resources owned by this OpenCode session:
 
 ```js
 if (typeof electronApp !== "undefined") await electronApp.close().catch(() => {});
@@ -535,7 +544,7 @@ if (typeof stealth === "undefined" && typeof browser !== "undefined") await brow
 console.log("Playwright session closed");
 ```
 
-Wait for `Playwright session closed` before resetting the REPL. Normal remote-mode cleanup preserves the stealth session profile. `await stealth.resetProfile()` is destructive: it closes the remote session and deletes its complete dedicated identity without relaunching.
+Wait for `Playwright session closed` before resetting the REPL when cleanup can run. Do not reset after an ordinary explicit close unless the user also requests a new browser. Normal remote-mode close preserves the stealth session profile. `await stealth.resetProfile()` is destructive: it closes the remote session and deletes its complete dedicated identity without relaunching, so use it only when the user explicitly requests a profile reset.
 
 ## Remote Stealth Limits
 
