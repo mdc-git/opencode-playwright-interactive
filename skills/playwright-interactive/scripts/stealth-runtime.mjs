@@ -27,6 +27,13 @@ const IDENTITY_HEADERS = Object.freeze([
   "sec-ch-ua-platform",
   "user-agent",
 ]);
+const STEALTH_ARGUMENTS = Object.freeze([
+  "--disable-blink-features=AutomationControlled",
+  "--disable-features=AutomationControlled,IsolateOrigins,site-per-process",
+  "--no-first-run",
+  "--no-default-browser-check",
+]);
+const BEHAVIOR_SCHEMA = 2;
 let installedRuntime;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -40,6 +47,28 @@ const normal = () => {
 };
 const logNormal = (mean, sigma) => Math.max(1, Math.exp(Math.log(Math.max(1, mean)) + sigma * normal()));
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
+// Fitts's law: expected movement time for a pointer travelling distance D to a
+// target of width W, in milliseconds. Humans plan travel time from D and W.
+const fittsDuration = (distance, targetSize, profile) =>
+  clamp(profile.fittsIntercept + profile.fittsSlope * Math.log2(distance / Math.max(1, targetSize) + 1), profile.fittsMinDuration, profile.fittsMaxDuration);
+// Common digraphs are stored as units and typed quickly; rare combinations
+// carry a planning cost. Returns a latency multiplier for a character pair.
+const BIGRAM_EASE = /^(th|he|in|er|an|re|on|at|en|nd|ti|es|or|te|of|ed|is|it|al|ar|st|to|nt|ng|se|ha|as|ou|io|le|ve|co|me|de|hi|ri|ro|ic|ne|ea|ra|ce|li|ch|ll|be|ma|si|om|ur)$/;
+const digraphFactor = (previous, current) => {
+  if (!previous) return 1.35;
+  const pair = `${previous}${current}`.toLowerCase();
+  if (BIGRAM_EASE.test(pair)) return 0.82;
+  if (previous === current) return 0.92;
+  if (/^[\s\p{Zs}]$/u.test(previous) || /^[\s\p{Zs}]$/u.test(current)) return 1.08;
+  if (/[\p{P}\p{S}]/u.test(current) || /[A-Z]/.test(current)) return 1.22;
+  return 1;
+};
+// QWERTY adjacency used for realistic substitution typos.
+const KEY_NEIGHBORHOOD = {
+  q: "was", w: "qeasd", e: "wrsdf", r: "etdfg", t: "ryfgh", y: "tughj", u: "yihjk", i: "uojkl", o: "ipkl", p: "ol",
+  a: "qwsz", s: "awedzx", d: "serfcx", f: "drtgvc", g: "ftyhvb", h: "gyujnb", j: "huikmn", k: "jiolm", l: "kop",
+  z: "asx", x: "zsdc", c: "xdfv", v: "cfgb", b: "vghn", n: "bhjm", m: "njk",
+};
 
 export async function installStealthRuntime({
   chromium,
@@ -65,7 +94,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   const controllerLaunches = new Map();
 
   const defaults = {
-    schema: 1,
+    schema: BEHAVIOR_SCHEMA,
     clickPrecision: 2.5,
     curveFactor: 0.15,
     overshootChance: 0.55,
@@ -81,6 +110,11 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     keyHoldMax: 110,
     actionGapMean: 400,
     actionGapSigma: 0.35,
+    fittsIntercept: 90,
+    fittsSlope: 110,
+    fittsMinDuration: 60,
+    fittsMaxDuration: 900,
+    typoRate: 0.02,
   };
 
   const number = (value, fallback, minimum, maximum) => {
@@ -89,7 +123,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   };
 
   const normalizeBehavior = (value) => {
-    if (!value || value.schema !== 1 || typeof value.profileId !== "string" || !value.profileId) return undefined;
+    if (!value || value.schema !== BEHAVIOR_SCHEMA || typeof value.profileId !== "string" || !value.profileId) return undefined;
     const profile = { ...defaults, profileId: value.profileId };
     profile.clickPrecision = number(value.clickPrecision, profile.clickPrecision, 1, 5);
     profile.curveFactor = number(value.curveFactor, profile.curveFactor, 0.05, 0.3);
@@ -106,6 +140,12 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     profile.keyHoldMax = number(value.keyHoldMax, profile.keyHoldMax, 60, 180);
     profile.actionGapMean = number(value.actionGapMean, profile.actionGapMean, 200, 800);
     profile.actionGapSigma = number(value.actionGapSigma, profile.actionGapSigma, 0.1, 0.6);
+    profile.fittsIntercept = number(value.fittsIntercept, profile.fittsIntercept, 40, 200);
+    profile.fittsSlope = number(value.fittsSlope, profile.fittsSlope, 40, 250);
+    profile.fittsMinDuration = number(value.fittsMinDuration, profile.fittsMinDuration, 30, 200);
+    profile.fittsMaxDuration = number(value.fittsMaxDuration, profile.fittsMaxDuration, 300, 2500);
+    profile.typoRate = number(value.typoRate, profile.typoRate, 0, 0.08);
+    if (profile.fittsMaxDuration < profile.fittsMinDuration) profile.fittsMaxDuration = profile.fittsMinDuration + 1;
     if (profile.overshootMax < profile.overshootMin) profile.overshootMax = profile.overshootMin + 1;
     if (profile.clickHoldMax < profile.clickHoldMin) profile.clickHoldMax = profile.clickHoldMin + 1;
     if (profile.keyHoldMax < profile.keyHoldMin) profile.keyHoldMax = profile.keyHoldMin + 1;
@@ -124,6 +164,11 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     typingSigma: uniform(0.25, 0.35),
     actionGapMean: uniform(340, 460),
     actionGapSigma: uniform(0.3, 0.4),
+    fittsIntercept: uniform(80, 110),
+    fittsSlope: uniform(95, 135),
+    fittsMinDuration: uniform(45, 75),
+    fittsMaxDuration: uniform(700, 1200),
+    typoRate: uniform(0.008, 0.035),
   });
 
   const stealthPaths = ({ dataDir } = {}) => {
@@ -237,7 +282,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   });
 
   const normalizeMetadata = (value) => value && value.schema === 1 && typeof value.profileId === "string" && value.profileId
-    ? { schema: 1, profileId: value.profileId, personaId: value.personaId || "", behaviorSchema: 1, personaSchema: PERSONA_SCHEMA, createdAt: value.createdAt || new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: Number.isInteger(value.resetGeneration) ? value.resetGeneration : 0 }
+    ? { schema: 1, profileId: value.profileId, personaId: value.personaId || "", behaviorSchema: BEHAVIOR_SCHEMA, personaSchema: PERSONA_SCHEMA, createdAt: value.createdAt || new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: Number.isInteger(value.resetGeneration) ? value.resetGeneration : 0 }
     : undefined;
 
   const assertCoherentLaunchOptions = (launchOptions, contextOptions) => {
@@ -284,9 +329,11 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     throw new TypeError("Stealth target must be a Locator or { x, y }");
   };
 
-  const pointFor = (box, profile) => box.stealthPoints?.length
-    ? box.stealthPoints[Math.floor(Math.random() * box.stealthPoints.length)]
-    : { x: box.width <= 1 ? box.x : clamp(box.x + box.width / 2 + normal() * profile.clickPrecision, box.x + 1, box.x + Math.max(1, box.width - 1)), y: box.height <= 1 ? box.y : clamp(box.y + box.height / 2 + normal() * profile.clickPrecision, box.y + 1, box.y + Math.max(1, box.height - 1)) };
+  const pointFor = (box, profile) => {
+    const targetSize = Math.max(box.width, box.height);
+    if (box.stealthPoints?.length) return { ...box.stealthPoints[Math.floor(Math.random() * box.stealthPoints.length)], targetSize };
+    return { x: box.width <= 1 ? box.x : clamp(box.x + box.width / 2 + normal() * profile.clickPrecision, box.x + 1, box.x + Math.max(1, box.width - 1)), y: box.height <= 1 ? box.y : clamp(box.y + box.height / 2 + normal() * profile.clickPrecision, box.y + 1, box.y + Math.max(1, box.height - 1)), targetSize };
+  };
 
   const pathBetween = (from, to, profile) => {
     const dx = to.x - from.x;
@@ -325,12 +372,12 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     }
     const profile = await loadBehavior({ dataDir: paths.root });
     const persona = await readRecord(paths.persona, normalizePersona, createPersona);
-    const metadata = await readRecord(paths.identityMetadata, normalizeMetadata, () => ({ schema: 1, profileId: profile.profileId, personaId: persona.personaId, behaviorSchema: 1, personaSchema: PERSONA_SCHEMA, createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: 0 }));
+    const metadata = await readRecord(paths.identityMetadata, normalizeMetadata, () => ({ schema: 1, profileId: profile.profileId, personaId: persona.personaId, behaviorSchema: BEHAVIOR_SCHEMA, personaSchema: PERSONA_SCHEMA, createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), resetGeneration: 0 }));
     metadata.profileId = profile.profileId;
     metadata.personaId = persona.personaId;
     await writeRecord(paths.identityMetadata, metadata);
     const mobile = profileKind === "mobile";
-    const args = [...(launchOptions.args || [])];
+    const args = [...STEALTH_ARGUMENTS, ...(launchOptions.args || [])];
     const emulatedViewport = mobile ? { ...MOBILE_VIEWPORT } : null;
     const options = {
       ...launchOptions,
@@ -357,7 +404,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       browserVersion,
       browserIdentity: "native",
       userAgentOverride: false,
-      automationControlledOverride: false,
+      automationControlledOverride: true,
       locale: persona.locale,
       timezoneId: persona.timezoneId,
       emulation: mobile ? "responsive-touch" : "desktop",
@@ -427,25 +474,65 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       state.queue = result.catch(() => {});
       return result;
     };
+    // Move along the Bezier path with a human velocity profile: slow launch,
+    // fast mid-flight, decelerating approach. Total travel time follows
+    // Fitts's law rather than a constant rate per pixel.
     const moveToPoint = async (currentPage, state, point) => {
       const size = await viewport(currentPage);
       const from = { x: state.x ?? size.width / 2, y: state.y ?? size.height / 2 };
       const points = pathBetween(from, point, profile);
-      const perPoint = Math.max(5, clamp(Math.hypot(point.x - from.x, point.y - from.y) * 0.5 + 80, 80, 350) / points.length);
-      for (const next of points) { requirePage(currentPage); await currentPage.mouse.move(next.x, next.y); state.x = next.x; state.y = next.y; await sleep(uniform(perPoint * 0.75, perPoint * 1.25)); }
+      const distance = Math.hypot(point.x - from.x, point.y - from.y);
+      const duration = fittsDuration(distance, point.targetSize || 10, profile);
+      let elapsed = 0;
+      for (let index = 0; index < points.length; index += 1) {
+        const next = points[index];
+        requirePage(currentPage);
+        await currentPage.mouse.move(next.x, next.y);
+        state.x = next.x;
+        state.y = next.y;
+        if (index + 1 >= points.length) break;
+        const t = (index + 2) / points.length;
+        const eased = duration * t * t * (3 - 2 * t);
+        const slice = eased - elapsed;
+        elapsed = eased;
+        await sleep(Math.max(4, slice * uniform(0.8, 1.2)));
+      }
     };
     const withModifiers = async (currentPage, modifiers, action) => {
       const pressed = [];
       try { for (const modifier of modifierList(modifiers)) { await currentPage.keyboard.down(modifier); pressed.push(modifier); } return await action(); }
       finally { for (const modifier of pressed.reverse()) await currentPage.keyboard.up(modifier).catch(() => {}); }
     };
+    const pressKey = async (currentPage, character, holdMin = profile.keyHoldMin, holdMax = profile.keyHoldMax) => {
+      try { await currentPage.keyboard.press(character, { delay: uniform(holdMin, holdMax) }); } catch { await currentPage.keyboard.insertText(character); }
+    };
     const typeText = async (currentPage, text) => {
       if (typeof text !== "string") throw new TypeError("Stealth text input requires a string");
+      if (!text.length) return;
+      // Humans plan before the first keystroke of a burst.
+      await sleep(logNormal(300, 0.3));
+      let previous = "";
       for (const character of text) {
-        if (/^[\p{Letter}\p{Number}\p{P}\p{S}\p{Zs}]$/u.test(character)) {
-          try { await currentPage.keyboard.press(character, { delay: uniform(profile.keyHoldMin, profile.keyHoldMax) }); } catch { await currentPage.keyboard.insertText(character); }
-        } else await currentPage.keyboard.insertText(character);
-        await sleep(logNormal(character === " " ? 120 : profile.typingMean, character === " " ? 0.25 : profile.typingSigma));
+        // Substitution typo using an adjacent QWERTY key, followed by the
+        // human latency to notice, backspace, and retype.
+        const typoNeighbor = typeof character === "string" && /^[a-z]$/i.test(character) && Math.random() < profile.typoRate
+          ? KEY_NEIGHBORHOOD[character.toLowerCase()]
+          : undefined;
+        if (typoNeighbor) {
+          await pressKey(currentPage, typoNeighbor[Math.floor(Math.random() * typoNeighbor.length)]);
+          await sleep(logNormal(profile.typingMean, profile.typingSigma));
+          await sleep(logNormal(280, 0.3));
+          await currentPage.keyboard.press("Backspace", { delay: uniform(profile.keyHoldMin, profile.keyHoldMax) });
+          await sleep(logNormal(240, 0.3));
+          previous = "";
+        }
+        if (/^[\p{Letter}\p{Number}\p{P}\p{S}\p{Zs}]$/u.test(character)) await pressKey(currentPage, character);
+        else await currentPage.keyboard.insertText(character);
+        const base = character === " "
+          ? logNormal(120, 0.25)
+          : logNormal(profile.typingMean, profile.typingSigma) * digraphFactor(previous, character);
+        await sleep(Math.max(8, base));
+        previous = character;
       }
     };
     const performClick = async (currentPage, state, target, options = {}, count = 1) => {
@@ -573,9 +660,29 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       return Object.freeze(entries);
     };
     const moveToTarget = async (currentPage, state, target, trialOptions) => { const box = await targetBox(currentPage, target, trialOptions); await moveToPoint(currentPage, state, pointFor(box, profile)); };
+    // Momentum scrolling: one flick launches with an impulse that decays,
+    // mirroring how wheel/trackpad events arrive in bursts under hardware
+    // smoothing. Frame-dense early ticks, sparse settling ticks at the tail.
     const wheelSteps = async (currentPage, deltaX, deltaY) => {
-      const steps = Math.max(1, Math.ceil(Math.max(Math.abs(deltaX), Math.abs(deltaY)) / 180));
-      for (let index = 0; index < steps; index += 1) { await currentPage.mouse.wheel(deltaX / steps, deltaY / steps); if (index + 1 < steps) await sleep(uniform(30, 80)); }
+      const magnitude = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+      if (!(magnitude > 0)) return;
+      let remainingX = deltaX;
+      let remainingY = deltaY;
+      let impulse = clamp(magnitude * uniform(0.3, 0.5), 48, 360);
+      const decay = uniform(0.6, 0.78);
+      while (Math.max(Math.abs(remainingX), Math.abs(remainingY)) > 0) {
+        const leftMagnitude = Math.max(Math.abs(remainingX), Math.abs(remainingY));
+        const step = Math.min(impulse, leftMagnitude);
+        const share = step / leftMagnitude;
+        const stepX = remainingX * share;
+        const stepY = remainingY * share;
+        remainingX -= stepX;
+        remainingY -= stepY;
+        await currentPage.mouse.wheel(stepX, stepY);
+        if (Math.max(Math.abs(remainingX), Math.abs(remainingY)) <= 0.5) break;
+        impulse *= decay * uniform(0.85, 1.1);
+        await sleep(impulse > 90 ? uniform(16, 42) : uniform(55, 110));
+      }
     };
     const wheel = (currentPage, deltaX, deltaY, target) => queueAction(currentPage, "wheel", async (state) => {
       if (target !== undefined) await moveToTarget(currentPage, state, target);
@@ -592,7 +699,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       pageState: (currentPage) => { const state = requirePage(currentPage); return Object.freeze({ registered: true, busy: state.busy, action: state.action, timerActive: Boolean(state.timer), stopped: state.stopped, lastDocumentStatus: state.lastDocumentStatus }); },
       managed: (currentPage) => { requirePage(currentPage); return true; },
       telemetry: () => Object.freeze({ ...telemetry }),
-      capabilities: () => Object.freeze({ state: status, profileKind, lastManagedOrigin, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, ambientInput: false, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: identity.deviceScaleFactor, userAgent: undefined, identity, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, runtimeCdpPatch: false, standardPlaywrightProtocol: true, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
+      capabilities: () => Object.freeze({ state: status, profileKind, lastManagedOrigin, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, ambientInput: false, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "observed-only", serviceWorkers: "observed-only", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: identity.deviceScaleFactor, userAgent: undefined, identity, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, runtimeCdpPatch: "rebrowser-patches (applied to playwright-core at setup; verify with stealth-audit)", automationControlledFlag: false, standardPlaywrightProtocol: true, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
       resolveVisible,
       interactiveElements,
       moveTo: (currentPage, target) => queueAction(currentPage, "moveTo", (state) => moveToTarget(currentPage, state, target)),

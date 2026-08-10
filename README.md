@@ -89,8 +89,8 @@ The `local.js-repl` plugin registers these tools:
 
 - `js_repl` runs JavaScript in a persistent Node.js kernel.
 - `js_repl_reset` clears the current session's bindings and stops its kernel.
-- `js_repl_playwright_setup` installs Playwright and Chromium in the user
-  cache.
+- `js_repl_playwright_setup` installs Playwright, Chromium and
+  rebrowser-patches in the user cache.
 
 `js_repl` accepts `code` and an optional `timeout_ms` from 1 to 300000. The
 default is 30000 milliseconds. Send plain JavaScript without Markdown fences.
@@ -148,8 +148,11 @@ stops every plugin kernel.
 ## Playwright skill
 
 Call `js_repl_playwright_setup` before the first browser session. It installs
-Playwright 1.62.0 and Chromium under `~/.cache/opencode/playwright` by default.
-The REPL then resolves the shared package and browser path automatically.
+Playwright 1.62.0 and Chromium under `~/.cache/opencode/playwright` by default
+and applies rebrowser-patches to the installed `playwright-core`, closing the
+`Runtime.enable` CDP automation leak and renaming the default utility world.
+The patch is re-applied automatically after any reinstall. The REPL then
+resolves the shared package and browser path automatically.
 
 For local web apps, the skill launches standard Chromium and uses ordinary
 Playwright APIs without loading the stealth runtime. Local targets include
@@ -161,7 +164,8 @@ For remote websites, the skill opens Chromium with
 `launchPersistentContext()`. Browser data, `behavior.json`, `persona.json` and
 `profile.json` are stored under the session's `opencode.tmpDir/stealth/`
 directory. The runtime keeps Chromium's native version-coherent user agent and
-automation state and rejects identity-critical caller overrides. Managed input
+suppresses the automation-controlled disclosure with launch arguments; it
+rejects identity-critical caller overrides. Managed input
 is task-bound and emits no periodic pointer movement while idle. Separate
 OpenCode sessions can run browsers at the same time. Desktop and responsive
 touch modes in one remote session share a profile, so they must run one after
@@ -193,9 +197,10 @@ inspection, it takes a screenshot before trying another selector. Target
 diagnostics report the element's frame, root, geometry and hit-tested element
 in one inspection.
 
-Remote mode does not add a user-agent override, suppress Chromium's native
-automation state, patch CDP, rotate network identity or manipulate challenge
-systems. The runtime blocks custom user agent, locale, timezone, viewport,
+Remote mode does not add a user-agent override, rotate network identity or
+manipulate challenge systems. The patched driver avoids `Runtime.enable`, and
+Chromium launches with automation-controlled Blink features disabled. The
+runtime blocks custom user agent, locale, timezone, viewport,
 mobile, touch, scale, screen, identity-bearing HTTP header and Chromium
 argument overrides so these settings cannot silently contradict each other.
 Its telemetry is coarse and in-memory: action, failure, navigation and popup
@@ -206,7 +211,9 @@ Direct Playwright calls such as `locator.*`, `page.mouse`, `page.keyboard`,
 `page.touchscreen` and DOM mutation through `evaluate()` still work, but they
 do not use the managed input layer. Frames follow the normal Playwright
 lifecycle. Dedicated workers and service workers are observed but not
-modified. Playwright still enables `Runtime.enable` during normal operation.
+modified. The rebrowser-patched driver does not enable `Runtime.enable`;
+the fix mode defaults to `addBinding` and can be changed with
+`REBROWSER_PATCHES_RUNTIME_FIX_MODE`.
 Local web and Electron testing use ordinary Playwright calls instead of these
 controller methods. Electron support is separate from the Chromium stealth
 runtime.
