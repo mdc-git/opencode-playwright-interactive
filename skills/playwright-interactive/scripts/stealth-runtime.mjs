@@ -479,7 +479,12 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       let remainingY = deltaY;
       let impulse = clamp(magnitude * uniform(0.3, 0.5), 48, 360);
       const decay = uniform(0.6, 0.78);
+      let steps = 0;
       while (Math.max(Math.abs(remainingX), Math.abs(remainingY)) > 0) {
+        if (++steps > 120 || impulse < 1) {
+          await currentPage.mouse.wheel(remainingX, remainingY);
+          break;
+        }
         const leftMagnitude = Math.max(Math.abs(remainingX), Math.abs(remainingY));
         const step = Math.min(impulse, leftMagnitude);
         const share = step / leftMagnitude;
