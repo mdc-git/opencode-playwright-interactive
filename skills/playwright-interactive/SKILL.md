@@ -222,6 +222,10 @@ Do not navigate during startup merely to prove that the browser opened. The sele
 
 The same rule applies after recovery and to local applications: use the application origin root, then reach every state through visible controls. A URL supplied verbatim by the user may be opened as requested, but its path, query, and fragment must not be invented, edited, or reused to shortcut an interaction.
 
+## First Visit Cleanup
+
+When opening a remote site for the first time in the current browser profile, inspect the complete cross-frame interactive inventory for cookie consent banners and modal overlays before continuing with the requested task. Always accept a visible cookie banner using its affirmative control such as `Accept All`, `Accept`, or `Allow`; do not choose a narrower or rejecting option unless the user asks. Dismiss every benign, dismissible modal overlay using its visible `Close`, `Dismiss`, or `Cancel` control, including overlays hosted in iframes or shadow roots. Do not treat login, payment, age-verification, CAPTCHA, access-denial, or other consequential dialogs as benign: stop or follow the user’s explicit flow instead. Verify the consent banner and dismissed overlays are gone in a separate inspection pass, and use the self-removing-control guidance if a dismissal click times out.
+
 ## Information Before Interaction
 
 Before any browser interaction, the agent **MUST** decide whether the request can be answered from the current document DOM/source. An interaction includes navigation, clicking, filling, pressing, hovering, dragging, tapping, scrolling, or any other input. If the needed information is already present in the current DOM/source, the agent **MUST** inspect it and answer directly without interacting. Text outside the viewport or a scroll container can still already be present in the DOM; it is not evidence that scrolling or clicking is required.
