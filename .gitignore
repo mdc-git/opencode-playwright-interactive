@@ -1,0 +1,2 @@
+# Local OpenCode install/test artifacts (plugins, node_modules, session plans).
+.opencode/

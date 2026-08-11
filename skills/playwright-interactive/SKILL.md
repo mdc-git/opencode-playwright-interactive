@@ -98,13 +98,10 @@ Send this complete block as the first `execute` call after setup:
 return await tools.js_repl({
   code: `var playwright = await import("playwright");
 var chromium = playwright.chromium;
-var electronLauncher = playwright._electron;
 var path = await import("node:path");
 var fs = await import("node:fs/promises");
 var { pathToFileURL } = await import("node:url");
 var HEADLESS = false;
-var webProfileDir;
-var mobileProfileDir;
 var stealthRuntimeCandidates = [
   path.join(opencode.cwd, ".opencode", "skills", "playwright-interactive", "scripts", "stealth-runtime.mjs"),
   path.join(opencode.homeDir, ".config", "opencode", "skills", "playwright-interactive", "scripts", "stealth-runtime.mjs"),
@@ -123,19 +120,16 @@ var stealthRuntime = await installStealthRuntime({
   chromium,
   opencode,
   headless: HEADLESS,
-  webProfileDir,
-  mobileProfileDir,
 });
 var ensureWebBrowser = stealthRuntime.ensureWebBrowser;
 var ensureMobileBrowser = stealthRuntime.ensureMobileBrowser;
-var createStealthController = stealthRuntime.createStealthController;
-var launchStealthChromium = stealthRuntime.launchStealthChromium;
-var resetStealthProfile = stealthRuntime.resetStealthProfile;
-var stealthControllerRegistry = stealthRuntime.stealthControllerRegistry;
 var stealth = await ensureWebBrowser();
 var context = stealth.context;
 var browser = context.browser();
-var page = stealth.pages()[0] || await stealth.newPage();
+// Always start from a fresh managed page: the initial about:blank page left
+// by profile launch is occasionally stale or already crashed on some
+// driver/GPU combinations, and using it makes the whole first attempt fail.
+var page = await stealth.newPage();
 var stealthCapabilities = stealth.capabilities();
 if (
   stealthCapabilities.managedInput !== true ||
@@ -196,7 +190,7 @@ The runtime keeps the native Chromium user agent. Setup installs the maintained 
 
 ### Diagnostics And Sensitive Artifacts
 
-Use `stealth.identity`, `stealth.capabilities()`, `stealth.telemetry()`, and `stealth.pageState(page)` for coarse diagnostics. They report browser/version policy, emulation mode, managed-action counts, navigation counts, popup counts, failures, and the most recent main-document status without collecting page fingerprints, URLs, interaction traces, or credentials.
+Use `stealth.identity`, `stealth.capabilities()`, `stealth.telemetry()`, and `stealth.pageState(page)` for coarse diagnostics. They report browser/version policy, emulation mode, managed-action counts, navigation counts, popup counts, failures, and the most recent main-document status, and they record no page fingerprints, interaction traces, or credentials. URLs appear only where targeting needs them: element inventories list frame URLs and hrefs, and target-resolution errors report the frame URLs that were searched.
 
 ```js
 console.log({
@@ -346,7 +340,7 @@ console.log("Target frame:", resolvedTarget.frame.url());
 await stealth.click(page, resolvedTarget.locator);
 ```
 
-When the exact element is unknown, take one snapshot of all visible interactive DOM elements across every current frame and open shadow root. The first inventory after navigation allows one short render window for asynchronously attached UI; it does not wait for element counts to settle or truncate the result, and later inventories are immediate. It returns live locators plus semantic evidence; choose the element whose role, accessible-name evidence, state, and context fit the user's request:
+When the exact element is unknown, take one snapshot of all visible interactive DOM elements across every current frame and open shadow root. The first inventory after navigation allows one short render window for asynchronously attached UI; it does not wait for element counts to settle or truncate the result, and later inventories are immediate. It returns live locators plus semantic evidence; choose the element whose role, accessible-name evidence, state, and context fit the user's request. On very large pages the caller **MAY** bound the result with `{ limit: N }` (default is untruncated):
 
 ```js
 var interactive = await stealth.interactiveElements(page);
@@ -424,10 +418,17 @@ Because such controls are often the dismiss button of a frame-hosted banner, dia
 
 ## The REPL Call Budget
 
+### Errors In Code Mode Are Generic
+
+In Code Mode the orchestrator renders every `tools.js_repl`/tool failure as the same `Tool execution failed`, with no distinction between a timeout, a JavaScript exception, a Playwright error, or a permission denial, and no message detail. The exact error **is** available, but only if the cell text surfaces it: when a failure is not self-explanatory, re-run the failing statement inside the cell wrapped in `try { ... } catch (e) { console.log("ERROR:", e.message) }` so the diagnostic rides the ordinary tool output. The agent **MUST NOT** conclude what failed from `Tool execution failed` alone, and **MUST NOT** blindly retry an unchanged call after one.
+
+A rejected or timed-out call is not always a failed cell: a timeout abandons only the tool call, and the cell keeps running and may commit its bindings later. Before claiming a startup or action failed, confirm the real state with one short cell (for example printing whether the expected variables exist).
+
 Each `js_repl` call has a default duration cap. A timeout or cancellation ends only the tool call: the cell and every live handle (`playwright`, `stealth`, `page`) remain in the kernel, and later calls wait behind the unfinished cell. Multi-step sequences (`click` page-timeout + `waitForTimeout(9000)` + networkidle) routinely exceed 30 seconds. To keep the session responsive:
 
-- Set `timeout_ms` on every call that chains waits. A click’s default page timeout is 10s, so a single click+wait can consume 15–20s; two in one call often exceed 30s.
+- Set `timeout_ms` on every call that chains waits or uses managed typing. A click’s default page timeout is 10s, so a single click+wait can consume 15–20s. `stealth.fill`, `stealth.type`, and `stealth.pressText` use humanized per-key timing and can take materially longer than ordinary Playwright input, even for short strings. Budget at least 60s for a cell containing managed typing, and add navigation/wait time on top of that.
 - **Do not put successive waits in one call.** Split long flows across separate `js_repl` calls so none trips the cap.
+- For a typing-driven navigation flow, resolve and fill the field in one call, then press/verify in a later call. If combining them is necessary, use `timeout_ms: 60000` or higher rather than the 30s default.
 - Do not repeat an action after a timeout or cancellation: the original cell may still complete. Wait for the queued result or inspect the resulting UI state.
 - If the action call and one short follow-up state query both time out, the action queue is blocked. Use `js_repl_reset` immediately. Do not enqueue a screenshot, another inventory, or a modified retry behind the blocked action.
 - To stop an indefinitely stuck cell, use `js_repl_reset`; it destroys every live handle, so rerun the full startup block before touching `page`.
@@ -441,6 +442,7 @@ Use the session controller as the default interaction surface, and drive every a
 var target = await stealth.resolveVisible(page, (frame) => frame.getByRole("button", { name: "Continue", exact: true }));
 await stealth.click(page, target.locator);
 var email = await stealth.resolveVisible(page, (frame) => frame.getByLabel("Email"));
+// Managed typing is cadence-shaped; give this cell enough REPL time.
 await stealth.fill(page, email.locator, "user@example.com");
 await stealth.press(page, "Enter");
 var details = await stealth.resolveVisible(page, (frame) => frame.getByRole("link", { name: "Details" }));
