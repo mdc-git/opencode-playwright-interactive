@@ -1,7 +1,7 @@
 // Adapted from OpenAI Codex's js_repl kernel at revision 219c65d.
 // Bundled third-party notices are in tools/NOTICE.txt.
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { createInterface, type Interface as ReadLineInterface } from "node:readline"
 import { delimiter, join } from "node:path"
 import { homedir, tmpdir } from "node:os"
@@ -224,9 +224,16 @@ function emitText(textLike) {
   if (!state) return Promise.reject(new Error("opencode.emitText requires an active js_repl execution"));
   const text = typeof textLike === "string" ? textLike : textLike?.text;
   if (typeof text !== "string") return Promise.reject(new Error("opencode.emitText expected a string or { text }"));
-  if (Buffer.byteLength(text) > MAX_OUTPUT_BYTES) {
+  const bytes = Buffer.byteLength(text);
+  if (bytes > MAX_OUTPUT_BYTES) {
     return Promise.reject(new Error(\`opencode.emitText text exceeds the \${MAX_OUTPUT_BYTES}-byte limit\`));
   }
+  // Aggregate budget: console output and emitted text share one execution-wide
+  // cap so many small calls cannot grow memory past the protocol line limit.
+  if (state.outputBytes + bytes > MAX_OUTPUT_BYTES) {
+    return Promise.reject(new Error(\`opencode.emitText output exceeds the execution-wide \${MAX_OUTPUT_BYTES}-byte budget shared with console output\`));
+  }
+  state.outputBytes += bytes;
   state.emittedText.push(text);
   return Promise.resolve();
 }
@@ -291,9 +298,28 @@ const linkedFileModules = new Map();
 const linkedNativeModules = new Map();
 const linkedModuleEvaluations = new Map();
 
-function clearLocalFileModuleCaches() {
-  linkedFileModules.clear();
-  linkedModuleEvaluations.clear();
+const localModuleStamps = new Map();
+function isLocalModuleFresh(modulePath) {
+  const stamp = localModuleStamps.get(modulePath);
+  if (!stamp) return false;
+  try {
+    const info = fs.statSync(modulePath);
+    return info.mtimeMs === stamp.mtimeMs && info.size === stamp.size;
+  } catch {
+    return false;
+  }
+}
+// Local file modules stay cached across cells so bindings, singletons and side
+// effects persist for the session. A cell only invalidates a cached module
+// whose file changed on disk (mtime or size), matching the iterate-and-reload
+// workflow without re-running module side effects on every cell.
+function pruneStaleLocalFileModules() {
+  for (const modulePath of Array.from(linkedFileModules.keys())) {
+    if (isLocalModuleFresh(modulePath)) continue;
+    linkedFileModules.delete(modulePath);
+    linkedModuleEvaluations.delete(modulePath);
+    localModuleStamps.delete(modulePath);
+  }
 }
 
 function canonicalizePath(value) {
@@ -418,7 +444,9 @@ function resolveSpecifier(specifier, referrerIdentifier = null) {
 function resolvedToUrl(resolved) {
   if (resolved.kind === "builtin") return resolved.specifier;
   if (resolved.kind === "file") return pathToFileURL(resolved.path).href;
-  if (resolved.kind === "package") return resolved.specifier;
+  // The ESM contract expects a URL string; return the resolved entry point,
+  // not the original bare package name.
+  if (resolved.kind === "package") return pathToFileURL(resolved.path).href;
   throw new Error(\`Unsupported module resolution kind: \${resolved.kind}\`);
 }
 
@@ -455,6 +483,7 @@ async function loadLinkedNativeModule(resolved) {
 async function loadLinkedFileModule(modulePath) {
   let module = linkedFileModules.get(modulePath);
   if (!module) {
+    const info = fs.statSync(modulePath);
     module = new SourceTextModule(fs.readFileSync(modulePath, "utf8"), {
       context,
       identifier: modulePath,
@@ -465,6 +494,7 @@ async function loadLinkedFileModule(modulePath) {
         return importResolved(resolveSpecifier(specifier, referrer?.identifier));
       },
     });
+    localModuleStamps.set(modulePath, { mtimeMs: info.mtimeMs, size: info.size });
     linkedFileModules.set(modulePath, module);
   }
   if (module.status === "unlinked") {
@@ -625,8 +655,11 @@ function parseModuleSource(code, meriyah) {
     loc: false,
     disableWebCompat: true,
   };
+  // Each repair rewrites one cooked line terminator and re-parses; bound the
+  // attempts so pathological input cannot cause a quadratic parse storm.
+  const maxRepairs = Math.min(code.length, 64);
   let source = code;
-  for (let repairs = 0; repairs <= code.length; repairs += 1) {
+  for (let repairs = 0; repairs <= maxRepairs; repairs += 1) {
     try {
       return { source, ast: meriyah.parseModule(source, options) };
     } catch (error) {
@@ -710,6 +743,41 @@ function collectCommittedBindings(module, prior, current, explicitlyCommitted) {
   };
 }
 
+const MODULE_CHAIN_COMPACT_INTERVAL = 50;
+// Rebase the persistent binding chain every N cells: each cell links to the
+// previous one through "@prev", so the module graph would otherwise grow
+// without bound and retain every prior cell's objects for the kernel's
+// lifetime. A snapshot module re-exports the current bindings, letting older
+// cell modules (and everything they close over) become collectable.
+async function compactPreviousModule() {
+  if (!previousModule || !previousBindings.length) return;
+  if (cellCounter % MODULE_CHAIN_COMPACT_INTERVAL !== 0) return;
+  const bindings = previousBindings;
+  const sourceModule = previousModule;
+  const snapshot = new SourceTextModule(
+    "export { " + bindings.map((binding) => binding.name).join(", ") + ' } from "@prev";',
+    { context, identifier: path.join(cwd, \`.opencode_js_repl_snapshot_\${cellCounter}.mjs\`) },
+  );
+  await snapshot.link(async (specifier) => {
+    if (specifier !== "@prev") throw new Error(\`Unexpected binding snapshot import: \${specifier}\`);
+    return new SyntheticModule(
+      bindings.map((binding) => binding.name),
+      function initializeSnapshot() {
+        for (const binding of bindings) this.setExport(binding.name, sourceModule.namespace[binding.name]);
+      },
+      { context },
+    );
+  });
+  await snapshot.evaluate();
+  previousModule = snapshot;
+}
+
+function reportNonFatal(kind, error) {
+  try {
+    fs.writeSync(process.stderr.fd, "js_repl kernel non-fatal " + kind + " error: " + formatError(error) + "\\n");
+  } catch {}
+}
+
 function send(message) {
   fs.writeSync(PROTOCOL_FD, \`\${JSON.stringify(message)}\\n\`);
 }
@@ -747,21 +815,22 @@ function formatLog(args) {
     .join(" ");
 }
 
-async function withCapturedConsole(fn) {
+async function withCapturedConsole(state, fn) {
   const logs = [];
-  let bytes = 0;
+  state.logs = logs;
   let truncated = false;
   const capture = (...args) => {
     if (truncated) return;
     const line = formatLog(args);
     const next = Buffer.byteLength(line) + (logs.length ? 1 : 0);
-    if (bytes + next > MAX_OUTPUT_BYTES) {
+    // Console output and opencode.emitText share one execution-wide budget.
+    if (state.outputBytes + next > MAX_OUTPUT_BYTES) {
       logs.push(\`[js_repl output truncated at \${MAX_OUTPUT_BYTES} bytes]\`);
       truncated = true;
       return;
     }
     logs.push(line);
-    bytes += next;
+    state.outputBytes += next;
   };
   const original = context.console;
   context.console = { ...console, log: capture, info: capture, warn: capture, error: capture, debug: capture };
@@ -773,9 +842,9 @@ async function withCapturedConsole(fn) {
 }
 
 async function handleExec(message) {
-  clearLocalFileModuleCaches();
+  pruneStaleLocalFileModules();
   activeExecId = message.id;
-  const execState = { attachments: [], attachmentBytes: 0, pendingImages: [], emittedText: [] };
+  const execState = { attachments: [], attachmentBytes: 0, pendingImages: [], emittedText: [], outputBytes: 0, logs: null };
   activeExecState = execState;
   let module = null;
   let currentBindings = [];
@@ -791,7 +860,7 @@ async function handleExec(message) {
     priorBindings = built.priorBindings;
     nextBindings = built.nextBindings;
 
-    const output = await withCapturedConsole(async (logs) => {
+    const output = await withCapturedConsole(execState, async (logs) => {
       const identifier = path.join(cwd, \`.opencode_js_repl_cell_\${cellCounter++}.mjs\`);
       module = new SourceTextModule(built.source, {
         context,
@@ -834,6 +903,7 @@ async function handleExec(message) {
 
     previousModule = module;
     previousBindings = nextBindings;
+    try { await compactPreviousModule(); } catch (snapshotError) { reportNonFatal("binding snapshot", snapshotError); }
     send({
       type: "exec_result",
       id: message.id,
@@ -847,8 +917,12 @@ async function handleExec(message) {
     if (module && linked && (result.currentCount > 0 || (preludeCompleted && priorBindings.length > 0))) {
       previousModule = module;
       previousBindings = result.bindings;
+      try { await compactPreviousModule(); } catch (snapshotError) { reportNonFatal("binding snapshot", snapshotError); }
     }
-    send({ type: "exec_result", id: message.id, ok: false, output: "", error: formatError(error) });
+    // Preserve console/emitted text captured before the failure; those logs
+    // are usually the most useful debugging evidence in an interactive session.
+    const partialOutput = [...(execState.logs ?? []), ...execState.emittedText].join("\\n");
+    send({ type: "exec_result", id: message.id, ok: false, output: partialOutput, error: formatError(error) });
   } finally {
     if (activeExecId === message.id) activeExecId = null;
     if (activeExecState === execState) activeExecState = null;
@@ -874,7 +948,10 @@ process.stdin.on("data", (chunk) => {
     try {
       const message = JSON.parse(line);
       if (message.type === "exec") queue = queue.then(() => handleExec(message));
-    } catch {}
+      else reportNonFatal("protocol", new Error("ignored message of unknown type " + JSON.stringify(message?.type ?? null)));
+    } catch (error) {
+      reportNonFatal("protocol", new Error("ignored a malformed protocol line: " + formatError(error)));
+    }
   }
 });
 `
@@ -895,7 +972,6 @@ type Message = {
 }
 
 const checkedNodes = new Map<string, Promise<void>>()
-let cleanupRegistered = false
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
@@ -939,8 +1015,53 @@ async function checkNode(path: string) {
   return check
 }
 
-function kernel() {
-  return KERNEL_SOURCE
+const LOCK_STALE_MS = 15 * 60_000
+const LOCK_TIMEOUT_MS = 10 * 60_000
+const LOCK_POLL_MS = 250
+const LOCK_RENEW_MS = 30_000
+
+// Cross-process mutex for the shared user cache. Multiple OpenCode services
+// (or concurrent sessions) may run setup at the same time; npm installs,
+// source patching and browser downloads must not interleave. The lock is a
+// directory because mkdir is atomic on all supported platforms. A heartbeat
+// file keeps the lock fresh during long installs; locks whose heartbeat is
+// older than LOCK_STALE_MS are considered abandoned (e.g. after a crash) and
+// reclaimed.
+async function withCacheLock<T>(target: string, operation: () => Promise<T>): Promise<T> {
+  const lockPath = `${target}.lock`
+  const heartbeatPath = `${lockPath}/heartbeat`
+  const start = Date.now()
+  for (;;) {
+    try {
+      await mkdir(lockPath)
+      await writeFile(heartbeatPath, `${process.pid} ${Date.now()}\n`, "utf8").catch(() => undefined)
+      break
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error
+      if (Date.now() - start > LOCK_TIMEOUT_MS) {
+        throw new Error(`Timed out waiting for the js_repl setup lock ${lockPath}; another process may be installing. Remove it manually if the holder is gone.`)
+      }
+      let heartbeatAge = 0
+      try {
+        const info = await stat(heartbeatPath)
+        heartbeatAge = Date.now() - info.mtimeMs
+      } catch {
+        // No heartbeat yet; fall back to the lock directory's own age.
+        heartbeatAge = await stat(lockPath).then((info) => Date.now() - info.mtimeMs).catch(() => LOCK_STALE_MS + 1)
+      }
+      if (heartbeatAge > LOCK_STALE_MS) await rm(lockPath, { recursive: true, force: true }).catch(() => undefined)
+      else await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS))
+    }
+  }
+  const heartbeat = setInterval(() => {
+    void writeFile(heartbeatPath, `${process.pid} ${Date.now()}\n`, "utf8").catch(() => undefined)
+  }, LOCK_RENEW_MS)
+  try {
+    return await operation()
+  } finally {
+    clearInterval(heartbeat)
+    await rm(lockPath, { recursive: true, force: true }).catch(() => undefined)
+  }
 }
 
 function playwrightCacheDirectory() {
@@ -973,6 +1094,38 @@ async function packageMatches(file: string, name: string, version: string) {
   }
 }
 
+// The .chromium-<version> marker alone cannot prove the browser download
+// survived (users clean caches, disks fill, installs crash). Resolve the
+// expected executable from playwright-core's own browser registry and check
+// that it is actually on disk.
+async function chromiumExecutableExists(directory: string) {
+  try {
+    const registry = JSON.parse(await readFile(join(directory, "node_modules", "playwright-core", "browsers.json"), "utf8")) as {
+      browsers?: Array<{ name?: string; revision?: string; browserRevision?: string }>
+    }
+    const chromium = registry.browsers?.find((browser) => browser?.name === "chromium")
+    const revision = chromium?.browserRevision ?? chromium?.revision
+    if (!revision) return false
+    const relative =
+      process.platform === "darwin"
+        ? join(`chromium-${revision}`, "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium")
+        : process.platform === "win32"
+          ? join(`chromium-${revision}`, "chrome-win", "chrome.exe")
+          : join(`chromium-${revision}`, "chrome-linux", "chrome")
+    return await exists(join(playwrightBrowserDirectory(), relative))
+  } catch {
+    return false
+  }
+}
+
+// Guarded compatibility patch for rebrowser-playwright's upstream frame
+// lifecycle: on child-frame navigation, rebrowser's Frame emits
+// Runtime.executionContextsCleared on the whole CDP session, which makes
+// crPage destroy the execution contexts of *every* frame, including the main
+// frame's live handles. The patch scopes the clear to the affected frame
+// instead. It applies exact single-occurrence string replacements against the
+// installed playwright-core sources and fails loudly if the shape drifts (for
+// example after a version bump), rather than silently half-patching.
 async function ensureRebrowserFrameContextFix(directory: string) {
   const framesFile = join(directory, "node_modules", "playwright-core", "lib", "server", "frames.js")
   const chromiumPageFile = join(directory, "node_modules", "playwright-core", "lib", "server", "chromium", "crPage.js")
@@ -980,21 +1133,23 @@ async function ensureRebrowserFrameContextFix(directory: string) {
   const fixedClear = `    const frameSession = this._page._delegate._sessions.get(this._id) || this._page._delegate._mainFrameSession;\n    frameSession._onFrameExecutionContextsCleared(this);`
   const methodAnchor = `  _onExecutionContextsCleared() {\n    for (const contextId of Array.from(this._contextIdToContext.keys()))\n      this._onExecutionContextDestroyed(contextId);\n  }`
   const fixedMethod = `${methodAnchor}\n  _onFrameExecutionContextsCleared(frame) {\n    for (const [contextId, context] of this._contextIdToContext) {\n      if (context.frame === frame)\n        this._onExecutionContextDestroyed(contextId);\n    }\n  }`
+  const methodMarker = "  _onFrameExecutionContextsCleared(frame) {"
+  const occurrences = (source: string, needle: string) => source.split(needle).length - 1
   let frames = await readFile(framesFile, "utf8")
   let chromiumPage = await readFile(chromiumPageFile, "utf8")
   const clearReady = frames.includes(fixedClear)
-  const methodReady = chromiumPage.includes("  _onFrameExecutionContextsCleared(frame) {")
+  const methodReady = chromiumPage.includes(methodMarker)
   if (!clearReady) {
-    if (!frames.includes(originalClear)) throw new Error(`Could not apply the rebrowser frame-context fix: ${framesFile} has an unexpected shape`)
+    if (occurrences(frames, originalClear) !== 1) throw new Error(`Could not apply the rebrowser frame-context fix: ${framesFile} has an unexpected shape`)
     frames = frames.replace(originalClear, fixedClear)
     await writeFile(framesFile, frames)
   }
   if (!methodReady) {
-    if (!chromiumPage.includes(methodAnchor)) throw new Error(`Could not apply the rebrowser frame-context fix: ${chromiumPageFile} has an unexpected shape`)
+    if (occurrences(chromiumPage, methodAnchor) !== 1) throw new Error(`Could not apply the rebrowser frame-context fix: ${chromiumPageFile} has an unexpected shape`)
     chromiumPage = chromiumPage.replace(methodAnchor, fixedMethod)
     await writeFile(chromiumPageFile, chromiumPage)
   }
-  if (!(await readFile(framesFile, "utf8")).includes(fixedClear) || !(await readFile(chromiumPageFile, "utf8")).includes("  _onFrameExecutionContextsCleared(frame) {")) {
+  if (!frames.includes(fixedClear) || !chromiumPage.includes(methodMarker)) {
     throw new Error("The rebrowser frame-context fix could not be verified after installation")
   }
 }
@@ -1011,9 +1166,14 @@ async function run(command: string, args: string[], environment: NodeJS.ProcessE
 
 async function ensureMeriyah() {
   const directory = replCacheDirectory()
-  if (await exists(join(directory, "node_modules", "meriyah", "package.json"))) return
+  const packageFile = join(directory, "node_modules", "meriyah", "package.json")
+  if (await packageMatches(packageFile, "meriyah", MERIYAH_VERSION)) return
   await mkdir(directory, { recursive: true })
-  await run(process.env.OPENCODE_JS_REPL_NPM_PATH ?? "npm", ["install", "--prefix", directory, `meriyah@${MERIYAH_VERSION}`], process.env)
+  await withCacheLock(join(directory, ".meriyah-install"), async () => {
+    // Re-check under the lock: another process may have finished installing.
+    if (await packageMatches(packageFile, "meriyah", MERIYAH_VERSION)) return
+    await run(process.env.OPENCODE_JS_REPL_NPM_PATH ?? "npm", ["install", "--prefix", directory, `meriyah@${MERIYAH_VERSION}`], process.env)
+  })
 }
 
 function boundedUtf8(value: string, maxBytes: number) {
@@ -1080,8 +1240,7 @@ class ReplController {
     this.pending = undefined
     pending?.reject(new Error("js_repl controller disposed"))
     await this.stop()
-    if (this.scratch) await rm(this.scratch, { recursive: true, force: true }).catch(() => undefined)
-    this.scratch = undefined
+    await this.removeScratch()
   }
 
   private enqueue<T>(operation: () => Promise<T>) {
@@ -1128,7 +1287,7 @@ class ReplController {
     await checkNode(node)
     await ensureMeriyah()
     this.scratch ??= await mkdtemp(join(tmpdir(), "opencode-js-repl-"))
-    const source = kernel()
+    const source = KERNEL_SOURCE
     const kernelPath = join(this.scratch, "kernel.cjs")
     await writeFile(kernelPath, source)
     this.stderrTail = []
@@ -1150,6 +1309,10 @@ class ReplController {
       child.once("error", onError)
     })
     this.child = child
+    // Ownership marker: lets the next service instance identify (and sweep)
+    // scratch dirs left behind by dead services without ever touching a dir
+    // whose owning service is still alive.
+    await writeFile(join(this.scratch, "owner.json"), JSON.stringify({ servicePid: process.pid, kernelPid: child.pid, createdAt: new Date().toISOString() })).catch(() => undefined)
     child.stdout.resume()
     this.reader = createInterface({ input: child.stdio[3], crlfDelay: Infinity })
     this.reader.on("line", (line) => this.handleLine(child, line))
@@ -1169,7 +1332,12 @@ class ReplController {
     const pending = this.pending
     this.pending = undefined
     if (!message.ok) {
-      const error = new Error(message.error || "js_repl execution failed")
+      // Logs captured before the failure are the most useful debugging
+      // evidence; surface a bounded excerpt with the error.
+      const partial = typeof message.output === "string" && message.output
+        ? `\nOutput before failure:\n${boundedUtf8(message.output, 8_192)}`
+        : ""
+      const error = new Error(`${message.error || "js_repl execution failed"}${partial}`)
       if (message.error?.includes("kernel reset")) void this.stop().finally(() => pending.reject(error))
       else pending.reject(error)
       return
@@ -1222,12 +1390,206 @@ class ReplController {
     if (!child) return
     this.detach(child)
     if (child.exitCode !== null || child.killed) return
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 2_000)
-      child.once("close", () => { clearTimeout(timer); resolve() })
-      child.kill("SIGKILL")
-    })
+    // Graceful first: closing stdin triggers the kernel's stdin "end" handler
+    // so it can exit 0 and release browser/profile locks. SIGTERM is the next
+    // step and SIGKILL only the last resort, so profile directories are not
+    // left in a killed-process state.
+    try { child.stdin.end() } catch { /* stdin already closed */ }
+    if (await waitForChildClose(child, 1_500)) return
+    try { child.kill("SIGTERM") } catch { /* already exited */ }
+    if (await waitForChildClose(child, 1_500)) return
+    try { child.kill("SIGKILL") } catch { /* already exited */ }
+    await waitForChildClose(child, 2_000)
   }
+
+  // Remove the scratch directory, but only once Chromium is done with it: a
+  // shutting-down browser can recreate profile files after the rm and leave a
+  // partial user-data dir behind. The SingletonLock file is the browser's own
+  // shutdown signal; brief retries absorb any remaining late writes.
+  private async removeScratch() {
+    const scratch = this.scratch
+    if (!scratch) return
+    const lockPath = join(scratch, "stealth", "user-data", "SingletonLock")
+    const deadline = Date.now() + 2_500
+    while (Date.now() < deadline && (await exists(lockPath))) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    for (let attempt = 0; attempt < 3 && (await exists(scratch)); attempt += 1) {
+      await rm(scratch, { recursive: true, force: true }).catch(() => undefined)
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    this.scratch = undefined
+  }
+
+  // Graceful per-session teardown used when the OpenCode service is stopping.
+  // Closing stdin lets the kernel exit 0; Playwright's own process-exit hooks
+  // (inside the kernel) then close browsers and Electron apps in an orderly
+  // way and delete their temporary profile dirs. Surviving kernels are killed
+  // and the scratch directory (which also holds this session's stealth
+  // profile) is removed either way.
+  async disposeForShutdown() {
+    this.disposed = true
+    const pending = this.pending
+    this.pending = undefined
+    pending?.reject(new Error("js_repl controller disposed"))
+    const child = this.child
+    if (child) {
+      this.detach(child)
+      if (child.exitCode === null && !child.killed) {
+        try { child.stdin.end() } catch { /* stdin already closed */ }
+        if (!(await waitForChildClose(child, 1_200))) {
+          try { child.kill("SIGKILL") } catch { /* already exited */ }
+          await waitForChildClose(child, 1_000)
+        }
+      }
+    }
+    await this.removeScratch()
+  }
+
+  // Synchronous best-effort teardown for the process "exit" event, which
+  // cannot await asynchronous dispose().
+  terminateForExit() {
+    const child = this.child
+    if (child && child.exitCode === null && !child.killed) {
+      try { child.kill("SIGKILL") } catch { /* already exited */ }
+    }
+    // The scratch dir is deliberately left in place: a dying Chromium can
+    // recreate profile files for a second or two, so any rm here races it.
+    // The startup sweep removes the dir deterministically via owner.json
+    // once this service's pid is dead.
+  }
+}
+
+function waitForChildClose(child: KernelProcess, ms: number) {
+  return new Promise<boolean>((resolve) => {
+    if (child.exitCode !== null) return resolve(true)
+    const timer = setTimeout(() => {
+      child.off("close", onClose)
+      resolve(child.exitCode !== null)
+    }, ms)
+    const onClose = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    child.once("close", onClose)
+  })
+}
+
+// Instance-scoped teardown. This service process owns every controller in the
+// map, so shutting it down only ever affects kernels, browsers and profile
+// dirs that belong to THIS OpenCode instance; other instances live in their
+// own service processes and are never touched.
+let cleanupInstalled = false
+let shuttingDown = false
+
+const SCRATCH_PREFIX = "opencode-js-repl-"
+const OWNERLESS_SCRATCH_MAX_AGE_MS = 24 * 60 * 60 * 1000
+let staleSweepStarted = false
+
+// Sweep scratch dirs whose owning OpenCode service is dead. Owner-marked dirs
+// are removed only once their service pid is gone; unmarked dirs (older
+// versions or crash residue) are removed only once obviously stale. Dirs
+// owned by a live service — including other instances of this plugin — are
+// never touched. Runs once per service process, at plugin load, so shutdown
+// races that leave residue behind are cleaned on the next startup.
+async function sweepStaleScratchDirs() {
+  if (staleSweepStarted) return
+  staleSweepStarted = true
+  let entries: string[]
+  try {
+    entries = await readdir(tmpdir())
+  } catch {
+    return
+  }
+  const liveScratches = new Set<string>()
+  for (const controller of controllers.values()) {
+    const scratch = (controller as unknown as { scratch?: string }).scratch
+    if (scratch) liveScratches.add(scratch)
+  }
+  const removed: string[] = []
+  const removeKnownResidue = async (directory: string) => {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    removed.push(directory)
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(SCRATCH_PREFIX)) continue
+    const directory = join(tmpdir(), entry)
+    if (liveScratches.has(directory)) continue
+    try {
+      if (!(await stat(directory)).isDirectory()) continue
+    } catch {
+      continue
+    }
+    let servicePid: number | undefined
+    try {
+      const owner = JSON.parse(await readFile(join(directory, "owner.json"), "utf8")) as { servicePid?: number }
+      if (typeof owner.servicePid === "number") servicePid = owner.servicePid
+    } catch { /* no owner file */ }
+    if (servicePid !== undefined) {
+      try {
+        process.kill(servicePid, 0)
+        continue // owning service process is alive; possibly another instance
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "EPERM") continue
+      }
+      await removeKnownResidue(directory)
+      continue
+    }
+    try {
+      const info = await stat(directory)
+      if (Date.now() - info.mtimeMs > OWNERLESS_SCRATCH_MAX_AGE_MS) {
+        await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+      }
+    } catch { /* already gone */ }
+  }
+  if (!removed.length) return
+  // Second pass: a browser still shutting down can recreate parts of its
+  // user-data after the first sweep. These paths were known-dead residue, so
+  // a reappearing directory is safe to remove once more.
+  setTimeout(() => {
+    for (const directory of removed) {
+      if (!liveScratches.has(directory)) void rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }, 3_000).unref()
+}
+void sweepStaleScratchDirs().catch(() => undefined)
+
+async function disposeControllersForShutdown() {
+  const snapshot = Array.from(controllers.values())
+  await Promise.allSettled(snapshot.map((controller) => controller.disposeForShutdown()))
+  controllers.clear()
+}
+
+function installInstanceCleanup() {
+  if (cleanupInstalled) return
+  cleanupInstalled = true
+  const SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"]
+  const exitCodes: Partial<Record<NodeJS.Signals, number>> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }
+  const handlers = new Map<NodeJS.Signals, () => void>()
+  const reemit = (signal: NodeJS.Signals) => {
+    for (const [name, fn] of handlers) process.off(name, fn)
+    try {
+      process.kill(process.pid, signal)
+    } catch {
+      process.exit(exitCodes[signal] ?? 128)
+    }
+  }
+  for (const signal of SIGNALS) {
+    const handler = () => {
+      // Re-signals (or a concurrent signal) fall through to the re-emit path.
+      if (shuttingDown) return reemit(signal)
+      shuttingDown = true
+      void disposeControllersForShutdown().then(() => reemit(signal), () => reemit(signal))
+    }
+    handlers.set(signal, handler)
+    process.on(signal, handler)
+  }
+  // Last-resort sweep for exits that bypassed the signal handlers; only
+  // synchronous work is possible inside an "exit" listener.
+  process.once("exit", () => {
+    for (const controller of controllers.values()) controller.terminateForExit()
+    controllers.clear()
+  })
 }
 
 function controllerFor(sessionID: string, directory: string) {
@@ -1236,11 +1598,7 @@ function controllerFor(sessionID: string, directory: string) {
     controller = new ReplController(sessionID, directory)
     controllers.set(sessionID, controller)
   }
-  if (!cleanupRegistered) {
-    cleanupRegistered = true
-    const cleanup = () => { for (const controller of controllers.values()) void controller.dispose(); controllers.clear() }
-    process.once("exit", cleanup)
-  }
+  installInstanceCleanup()
   return controller
 }
 
@@ -1291,20 +1649,28 @@ export const playwright_setup = tool({
     const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), REBROWSER_PATCHES_RUNTIME_FIX_MODE: process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE ?? "addBinding" }
     context.metadata({ title: "Set Up Shared Playwright" })
     await mkdir(directory, { recursive: true })
-    const packageReady = await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)
-      && await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION)
-    if (args.force || !packageReady) {
-      await run(process.env.OPENCODE_PLAYWRIGHT_NPM_PATH ?? "npm", ["install", "--prefix", directory, `playwright@npm:${PLAYWRIGHT_PACKAGE}@${PLAYWRIGHT_VERSION}`], environment)
-      await rm(marker, { force: true })
-    }
-    if (!(await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)) || !(await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION))) {
-      throw new Error(`Playwright setup did not install ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION} and its matching core package`)
-    }
-    await ensureRebrowserFrameContextFix(directory)
-    if (args.force || !(await exists(marker))) {
-      await run(process.env.OPENCODE_PLAYWRIGHT_NPX_PATH ?? "npx", ["--prefix", directory, "playwright", "install", "chromium"], environment)
-      await writeFile(marker, "")
-    }
+    // Everything that mutates the shared cache (package install, source
+    // patching, browser download, marker) runs under one inter-process lock.
+    await withCacheLock(join(directory, ".playwright-setup"), async () => {
+      const packageReady = await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)
+        && await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION)
+      if (args.force || !packageReady) {
+        await run(process.env.OPENCODE_PLAYWRIGHT_NPM_PATH ?? "npm", ["install", "--prefix", directory, `playwright@npm:${PLAYWRIGHT_PACKAGE}@${PLAYWRIGHT_VERSION}`], environment)
+        await rm(marker, { force: true })
+      }
+      if (!(await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)) || !(await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION))) {
+        throw new Error(`Playwright setup did not install ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION} and its matching core package`)
+      }
+      await ensureRebrowserFrameContextFix(directory)
+      const markerReady = !args.force && (await exists(marker)) && (await chromiumExecutableExists(directory))
+      if (!markerReady) {
+        await run(process.env.OPENCODE_PLAYWRIGHT_NPX_PATH ?? "npx", ["--prefix", directory, "playwright", "install", "chromium"], environment)
+        if (!(await chromiumExecutableExists(directory))) {
+          throw new Error(`Chromium executable is missing from ${playwrightBrowserDirectory()} after installation`)
+        }
+        await writeFile(marker, "")
+      }
+    })
     return { title: "Set Up Shared Playwright", output: `Shared ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION}, its frame-context navigation fix and Chromium are ready at ${directory}.` }
   },
 })

@@ -48,14 +48,16 @@ For a project-only install, put the same directories under
 `<project>/.opencode/`. Keep the full skill directory. The startup code needs
 `scripts/stealth-runtime.mjs`, not only `SKILL.md`.
 
-Install the V2 plugin package in the same config directory:
+Install the V2 plugin package in the same config directory. Pin an exact
+snapshot that ships the V1 tool subpath used by `tools/js_repl.ts`
+(`@opencode-ai/plugin/v1`) rather than a moving tag:
 
 ```sh
 # Global install
-npm install --prefix ~/.config/opencode @opencode-ai/plugin@next
+npm install --prefix ~/.config/opencode @opencode-ai/plugin@0.0.0-next-17055
 
 # Project-only install
-npm install --prefix .opencode @opencode-ai/plugin@next
+npm install --prefix .opencode @opencode-ai/plugin@0.0.0-next-17055
 ```
 
 OpenCode discovers plugins in `.opencode/plugins/` and
@@ -129,7 +131,11 @@ console.log(counter)
 Top-level `const`, `let`, `var`, function, class and static import bindings
 persist between calls. `require(...)` resolves from the workspace. Static and
 dynamic imports support Node built-ins, installed workspace packages and local
-ESM `.js` or `.mjs` files.
+ESM `.js` or `.mjs` files. Local modules stay cached across cells and are
+re-evaluated only when the file changes on disk (modification time or size),
+so module singletons and side effects survive between iterations. Every 50
+cells the kernel compacts the persistent binding chain into a fresh snapshot
+module, so long sessions do not retain every previous cell's module graph.
 
 The kernel exposes `opencode.cwd`, `opencode.homeDir`, `opencode.tmpDir`,
 `opencode.sessionId`, `opencode.bindBrowser(options)`, `tmpDir`,
@@ -145,8 +151,16 @@ cell.
 
 Close browser resources before resetting the REPL. The OpenCode background
 service owns the plugin, so closing the TUI may leave the kernel running. Reset
-long-lived sessions when they no longer need the REPL. Restarting the service
-stops every plugin kernel.
+long-lived sessions when they no longer need the REPL.
+
+When the OpenCode service stops (stop, restart, or shutdown signals), the
+plugin performs instance-scoped teardown: every kernel belonging to that
+service exits, its browsers and Electron apps close through Playwright's
+orderly shutdown, and each session's scratch directory — including its
+stealth profile — is removed; forced-exit residue is swept on the next
+service start. Browsers, kernels and profiles belonging to other OpenCode
+instances (separate service processes) are never touched: scratch dirs are
+only removed once the owning service process is verifiably dead.
 
 Interactive browser sessions intentionally remain open after an agent finishes
 a task. This preserves the visible result for inspection and lets later turns
@@ -158,7 +172,10 @@ fatal kernel reset when cleanup is still possible.
 
 Call `js_repl_playwright_setup` before the first browser session. It installs
 rebrowser-playwright 1.52.0 and its matching Chromium under
-`~/.cache/opencode/playwright` by default. The maintained drop-in package closes
+`~/.cache/opencode/playwright` by default. Setup runs under an inter-process
+lock, so concurrent OpenCode sessions can call it safely; it verifies the
+Chromium executable exists rather than trusting a stale marker. The
+maintained drop-in package closes
 the `Runtime.enable` CDP automation leak and renames the default utility world.
 Setup verifies both package identities on every run and applies a guarded fix
 for rebrowser's session-wide execution-context clear on child-frame navigation.
@@ -223,8 +240,10 @@ runtime blocks custom user agent, locale, timezone, viewport,
 mobile, touch, scale, screen, identity-bearing HTTP header and Chromium
 argument overrides so these settings cannot silently contradict each other.
 Its telemetry is coarse and in-memory: action, failure, navigation and popup
-counts plus the latest main document status. It does not collect URLs, page
-fingerprints, tokens or input contents.
+counts plus the latest main document status. Telemetry records no URLs, page
+fingerprints, tokens or input contents; element inventories and
+target-resolution errors include the frame URLs and hrefs needed to locate
+controls.
 
 Direct Playwright calls such as `locator.*`, `page.mouse`, `page.keyboard`,
 `page.touchscreen` and DOM mutation through `evaluate()` still work, but they
@@ -247,6 +266,30 @@ denials and HTTP `403` or `429` responses. It does not solve CAPTCHAs or retry,
 switch modes, reset identity or open parallel sessions to seek a different
 result. Authorized tests should use provider test keys, staging, narrow
 allowlisting or headed human completion.
+
+## Environment Quirks
+
+Some driver, GPU and display combinations misbehave in ways this project
+cannot control. Known workarounds:
+
+- **Blank tabs or crashing initial pages.** The about:blank page left by a
+  persistent-profile launch can be stale or already crashed, making every
+  interaction on it fail with "Target page, context or browser has been
+  closed". The remote startup block therefore always creates a fresh managed
+  page. In local mode, if the first page misbehaves, create another with
+  `context.newPage()` before assuming the browser is broken.
+- **`page.setContent()` stalling.** On some Chromium builds it hangs waiting
+  for `load` even on an empty page. For blank-page fixtures, build the DOM
+  with `page.evaluate(() => { document.documentElement.innerHTML = ... })`
+  instead.
+- **Stalling actionability checks on flaky displays.** If headed Playwright
+  actions sit at their full timeout on an X display with unreliable
+  compositing, set `HEADLESS = true` in the startup block; headless runs do
+  not depend on the windowing system.
+- **"Tool execution failed" with no detail.** In Code Mode all tool failures
+  render as this generic string regardless of cause. Wrap the failing cell
+  body in `try { ... } catch (e) { console.log(e.message) }` to see the real
+  error, as described in the skill's REPL call-budget section.
 
 ## Configuration
 
