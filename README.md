@@ -97,13 +97,10 @@ Back up an existing target before replacing files with the same names:
 if [ -d "$TARGET" ]; then cp -a "$TARGET" "$TARGET.backup"; fi
 ```
 
-Remove files from the old flat layout, then install the plugin, complete skill
+Install the plugin, complete skill
 directory, and dependency:
 
 ```sh
-rm -f "$TARGET/plugins/js-repl.ts" "$TARGET/tools/js_repl.ts"
-rm -f "$TARGET/tools/LICENSE.txt" "$TARGET/tools/NOTICE.txt"
-rm -f "$TARGET/skills/playwright-interactive/LICENSE.txt" "$TARGET/skills/playwright-interactive/NOTICE.txt"
 mkdir -p "$TARGET/plugins" "$TARGET/skills"
 cp -R plugins/js-repl "$TARGET/plugins/"
 cp -R skills/playwright-interactive "$TARGET/skills/"
