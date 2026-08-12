@@ -1,7 +1,10 @@
-# OpenCode JavaScript REPL and Playwright
+# OpenCode V2 JavaScript REPL and Playwright
 
 A persistent JavaScript runtime and Playwright workflow for browser and Electron
-QA in OpenCode.
+QA in OpenCode V2.
+
+This project targets OpenCode V2 and its V2 plugin, tool, skill, permission,
+and Code Mode APIs. It is not a V1 plugin.
 
 <!-- markdownlint-disable-next-line MD033 -->
 <video controls src="https://github.com/user-attachments/assets/b015fe51-692f-475b-a8ac-a772695db35e"></video>
