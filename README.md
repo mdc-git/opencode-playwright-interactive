@@ -237,17 +237,17 @@ narrow allowlisting, or headed human completion where appropriate.
 
 ## Environment
 
-| Variable | Meaning |
-| --- | --- |
-| `OPENCODE_JS_REPL_NODE_PATH` | Node.js executable used for kernels. |
-| `OPENCODE_JS_REPL_NODE_MODULE_DIRS` | Additional package resolution roots, separated by the platform path delimiter. |
-| `OPENCODE_JS_REPL_CACHE_DIR` | Meriyah package cache directory. |
-| `OPENCODE_JS_REPL_NPM_PATH` | npm executable used to install Meriyah. |
-| `OPENCODE_PLAYWRIGHT_CACHE_DIR` | Shared Playwright package and browser cache. |
-| `OPENCODE_PLAYWRIGHT_NPM_PATH` | npm executable used during Playwright setup. |
-| `OPENCODE_PLAYWRIGHT_NPX_PATH` | npx executable used to install Chromium. |
-| `PLAYWRIGHT_BROWSERS_PATH` | Override or reuse a Playwright browser cache. |
-| `REBROWSER_PATCHES_RUNTIME_FIX_MODE` | Rebrowser runtime fix mode. Defaults to `addBinding`. |
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `OPENCODE_JS_REPL_NODE_PATH` | Node.js executable used for kernels. | `node` from `PATH` |
+| `OPENCODE_JS_REPL_NODE_MODULE_DIRS` | Additional package resolution roots, separated by the platform path delimiter. | Empty |
+| `OPENCODE_JS_REPL_CACHE_DIR` | Meriyah package cache directory. | `$XDG_CACHE_HOME/opencode`, or `~/.cache/opencode` when `XDG_CACHE_HOME` is unset |
+| `OPENCODE_JS_REPL_NPM_PATH` | npm executable used to install Meriyah. | `npm` from `PATH` |
+| `OPENCODE_PLAYWRIGHT_CACHE_DIR` | Shared Playwright package and browser cache. | `$XDG_CACHE_HOME/opencode/playwright`, or `~/.cache/opencode/playwright` when `XDG_CACHE_HOME` is unset |
+| `OPENCODE_PLAYWRIGHT_NPM_PATH` | npm executable used during Playwright setup. | `npm` from `PATH` |
+| `OPENCODE_PLAYWRIGHT_NPX_PATH` | npx executable used to install Chromium. | `npx` from `PATH` |
+| `PLAYWRIGHT_BROWSERS_PATH` | Override or reuse a Playwright browser cache. | `<OPENCODE_PLAYWRIGHT_CACHE_DIR>/browsers` using the resolved cache directory |
+| `REBROWSER_PATCHES_RUNTIME_FIX_MODE` | Rebrowser runtime fix mode. | `addBinding` |
 
 ## Security
 
