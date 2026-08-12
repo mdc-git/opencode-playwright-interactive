@@ -123,6 +123,15 @@ export default Plugin.define({
       })
     })
 
+    yield* context.session.hook("context", (event) => {
+      if (!("execute" in event.tools)) return Effect.void
+      event.system.push({
+        type: "text",
+        text: "When using js_repl through Code Mode, execute is only an orchestrator. Never put import(), require(), Playwright calls, browser variables, or other Node.js source at execute's top level. Submit the complete wrapper: return await tools.js_repl({ code: <JavaScript source string>, timeout_ms: <number> }); Copy complete wrapped examples from the playwright-interactive skill, not only their inner code value. Call setup with return await tools.js_repl_playwright_setup({});",
+      })
+      return Effect.void
+    })
+
     yield* context.event
       .subscribe()
       .pipe(
