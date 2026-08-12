@@ -211,6 +211,7 @@ would create an inconsistent profile.
 | Text output | Limited to 1 MiB per execution. |
 | Images | Up to four PNG, JPEG, WebP, or GIF images, limited to 5 MiB each. |
 | Operation timeout | Configurable from 1 ms to 300000 ms; the default is 30000 ms. |
+| Rejected promises | A rejected final expression or detached rejection fails the relevant call without resetting the kernel. A late background rejection is reported before the next cell executes. |
 | Timed-out work | May continue in the session kernel until that kernel is reset. |
 | TUI lifecycle | Closing the TUI does not necessarily stop the background service, kernel, or browser. |
 | Plugin cleanup | Reloading, disabling, or stopping the plugin closes its kernels and browser resources. |
