@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode-ai/plugin/effect"
 import { Error as ToolError } from "@opencode-ai/schema/tool"
 import { Effect, Stream } from "effect"
+import { fileURLToPath } from "node:url"
 import { ReplRuntime, limits } from "./runtime.ts"
 
 const asToolError = (error: unknown) =>
@@ -55,7 +56,8 @@ const textOutput = { type: "string" } as const
 export default Plugin.define({
   id: "local.js-repl",
   effect: Effect.fn(function* (context) {
-    const runtime = new ReplRuntime()
+    const skillDirectory = fileURLToPath(new URL("../../skills/playwright-interactive/", import.meta.url))
+    const runtime = new ReplRuntime(context.options, skillDirectory)
 
     yield* context.tool.transform((tools) => {
       tools.add({
