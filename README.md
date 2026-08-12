@@ -130,6 +130,30 @@ The resulting layout is:
 OpenCode discovers the plugin and skill from the selected config directory. No
 plugin entry is required in `opencode.json(c)`.
 
+## Plugin Options
+
+Configure the plugin through V2 plugin options. All options are optional:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [{
+    "package": "./plugins/js-repl",
+    "options": {
+      "nodePath": "node",
+      "nodeModuleDirs": [],
+      "replCacheDir": "/home/user/.cache/opencode",
+      "playwrightCacheDir": "/home/user/.cache/opencode/playwright",
+      "npmPath": "npm",
+      "playwrightNpmPath": "npm",
+      "playwrightNpxPath": "npx"
+    }
+  }]
+}
+```
+
+Paths are used as provided; shell expansion such as `~` is not performed.
+
 ### Permission
 
 OpenCode asks when no matching permission rule exists. To state that policy
@@ -228,30 +252,6 @@ Remote telemetry stays in memory and records action, failure, navigation, and
 popup counts plus the latest main-document status. It does not record tokens,
 input contents, page fingerprints, or a browsing history. Diagnostics may
 include frame URLs and links needed to identify a control.
-
-## Plugin Options
-
-Configure the plugin through V2 plugin options. All options are optional:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [{
-    "package": "./plugins/js-repl",
-    "options": {
-      "nodePath": "node",
-      "nodeModuleDirs": [],
-      "replCacheDir": "/home/user/.cache/opencode",
-      "playwrightCacheDir": "/home/user/.cache/opencode/playwright",
-      "npmPath": "npm",
-      "playwrightNpmPath": "npm",
-      "playwrightNpxPath": "npx"
-    }
-  }]
-}
-```
-
-Paths are used as provided; shell expansion such as `~` is not performed.
 
 ## Security
 
