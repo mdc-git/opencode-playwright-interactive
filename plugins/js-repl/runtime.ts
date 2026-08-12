@@ -21,6 +21,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/we
 const KERNEL_SOURCE = `// Adapted from OpenAI Codex's js_repl kernel at revision 219c65d.
 
 const { Buffer } = require("node:buffer");
+const { AsyncLocalStorage, createHook } = require("node:async_hooks");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const { builtinModules, createRequire } = require("node:module");
@@ -80,6 +81,16 @@ let internalBindingCounter = 0;
 let activeExecId = null;
 let activeExecState = null;
 let fatalExitScheduled = false;
+const unhandledRejections = new Map();
+const rejectionScope = new AsyncLocalStorage();
+const promiseOwners = new WeakMap();
+createHook({
+  init(_asyncId, type, _triggerAsyncId, resource) {
+    if (type !== "PROMISE") return;
+    const owner = rejectionScope.getStore();
+    if (owner) promiseOwners.set(resource, owner);
+  },
+}).enable();
 
 const internalBindingSalt = (() => {
   const raw = process.env.OPENCODE_JS_REPL_SESSION_ID ?? "";
@@ -796,7 +807,7 @@ function formatError(error) {
 function scheduleFatalExit(kind, error) {
   if (fatalExitScheduled) return;
   fatalExitScheduled = true;
-  const message = \`js_repl kernel \${kind}: \${formatError(error)}; kernel reset. Catch asynchronous errors to avoid kernel termination.\`;
+  const message = \`js_repl kernel \${kind}: \${formatError(error)}; kernel reset.\`;
   if (activeExecId) {
     try {
       fs.writeSync(PROTOCOL_FD, \`\${JSON.stringify({
@@ -812,6 +823,23 @@ function scheduleFatalExit(kind, error) {
     fs.writeSync(process.stderr.fd, \`\${message}\\n\`);
   } catch {}
   setImmediate(() => process.exit(1));
+}
+
+function takeUnhandledRejections(owner) {
+  const errors = [];
+  for (const [promise, rejection] of unhandledRejections) {
+    if (owner !== undefined && rejection.owner !== owner) continue;
+    unhandledRejections.delete(promise);
+    errors.push(rejection.error);
+  }
+  return errors;
+}
+
+function formatRejections(errors) {
+  const messages = [...new Set(errors.map(formatError))];
+  const shown = messages.slice(0, 5);
+  if (messages.length > shown.length) shown.push("... and " + (messages.length - shown.length) + " more");
+  return shown.join(" | ");
 }
 
 function formatLog(args) {
@@ -860,15 +888,23 @@ async function handleExec(message) {
   let linked = false;
   let preludeCompleted = false;
   let completionValue;
+  let completionPromise = null;
   const committed = new Set();
 
   try {
+    const priorUnhandled = takeUnhandledRejections();
+    if (priorUnhandled.length) {
+      throw new Error(
+        "Uncaught rejected Promise from background work: " + formatRejections(priorUnhandled) +
+        "; kernel preserved. This cell was not executed; call again to continue.",
+      );
+    }
     const built = await buildModuleSource(typeof message.code === "string" ? message.code : "");
     currentBindings = built.currentBindings;
     priorBindings = built.priorBindings;
     nextBindings = built.nextBindings;
 
-    const output = await withCapturedConsole(execState, async (logs) => {
+    const output = await rejectionScope.run(message.id, () => withCapturedConsole(execState, async (logs) => {
       const identifier = path.join(cwd, \`.opencode_js_repl_cell_\${cellCounter++}.mjs\`);
       module = new SourceTextModule(built.source, {
         context,
@@ -881,6 +917,11 @@ async function handleExec(message) {
           };
           meta.__opencodeCaptureCompletion = (value) => {
             completionValue = value;
+            // Promise assimilation handles cross-realm promises and reads a
+            // custom thenable's then property exactly once.
+            completionPromise = Promise.resolve(value).then((resolved) => {
+              completionValue = resolved;
+            });
           };
         },
         importModuleDynamically(specifier, referrer) {
@@ -904,11 +945,17 @@ async function handleExec(message) {
       });
       linked = true;
       await module.evaluate();
+      if (completionPromise) await completionPromise;
       if (execState.pendingImages.length) {
         const imageResults = await Promise.all(execState.pendingImages);
         const unhandled = imageResults.find((result) => !result.ok && !result.observation.observed);
         if (unhandled) throw unhandled.error;
       }
+      // Give Node one turn to classify detached rejections created by this
+      // cell, then surface them without terminating the persistent kernel.
+      await new Promise((resolve) => setImmediate(resolve));
+      const unhandled = takeUnhandledRejections(message.id);
+      if (unhandled.length) throw new Error("Uncaught rejected Promise: " + formatRejections(unhandled) + "; kernel preserved.");
       const completion = completionValue === undefined
         ? []
         : [inspect(completionValue, { depth: 4, colors: false })];
@@ -921,7 +968,7 @@ async function handleExec(message) {
         }
       }
       return [...logs, ...execState.emittedText, ...completion].join("\\n");
-    });
+    }));
 
     previousModule = module;
     previousBindings = nextBindings;
@@ -955,7 +1002,10 @@ let queue = Promise.resolve();
 let pending = "";
 
 process.on("uncaughtException", (error) => scheduleFatalExit("uncaught exception", error));
-process.on("unhandledRejection", (error) => scheduleFatalExit("unhandled rejection", error));
+process.on("unhandledRejection", (error, promise) =>
+  unhandledRejections.set(promise, { error, owner: promiseOwners.get(promise) ?? null })
+);
+process.on("rejectionHandled", (promise) => unhandledRejections.delete(promise));
 process.stdin.setEncoding("utf8");
 // The controller owns this pipe. Its closure means OpenCode has shut down.
 process.stdin.once("end", () => process.exit(0));
