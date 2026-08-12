@@ -1,12 +1,10 @@
 // Adapted from OpenAI Codex's js_repl kernel at revision 219c65d.
-// Bundled third-party notices are in tools/NOTICE.txt.
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { createInterface, type Interface as ReadLineInterface } from "node:readline"
 import { delimiter, join } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import { promisify } from "node:util"
-import { tool } from "@opencode-ai/plugin/v1"
 
 const execFileAsync = promisify(execFile)
 const MIN_NODE_VERSION = [22, 22, 0] as const
@@ -18,11 +16,9 @@ const MERIYAH_VERSION = "7.0.0"
 const PLAYWRIGHT_VERSION = "1.52.0"
 const PLAYWRIGHT_PACKAGE = "rebrowser-playwright"
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
-const controllers = new Map<string, ReplController>()
 
 // The persistent Node kernel is kept inline so this tool is self-contained.
 const KERNEL_SOURCE = `// Adapted from OpenAI Codex's js_repl kernel at revision 219c65d.
-// Licensed under Apache-2.0. See LICENSE and NOTICE at the project root.
 
 const { Buffer } = require("node:buffer");
 const crypto = require("node:crypto");
@@ -611,7 +607,7 @@ function applyReplacements(code, replacements) {
   return output;
 }
 
-function instrumentCurrentBindings(code, ast, marker) {
+function instrumentCurrentBindings(code, ast, marker, completionMarker) {
   const replacements = [];
   for (const statement of ast.body ?? []) {
     if (statement.type === "VariableDeclaration") {
@@ -643,6 +639,14 @@ function instrumentCurrentBindings(code, ast, marker) {
         text: instrumentVariableDeclaration(code, statement.init, marker),
       });
     }
+  }
+  const finalStatement = ast.body?.[ast.body.length - 1];
+  if (finalStatement?.type === "ExpressionStatement") {
+    replacements.push({
+      start: finalStatement.start,
+      end: finalStatement.end,
+      text: ";" + completionMarker + "((" + code.slice(finalStatement.expression.start, finalStatement.expression.end) + "));",
+    });
   }
   return applyReplacements(code, replacements);
 }
@@ -685,13 +689,16 @@ async function buildModuleSource(code) {
   const priorBindings = previousModule ? previousBindings : [];
   const markCommittedName = nextInternalBindingName();
   const markPreludeName = nextInternalBindingName();
-  const instrumented = instrumentCurrentBindings(code, ast, markCommittedName);
+  const captureCompletionName = nextInternalBindingName();
+  const instrumented = instrumentCurrentBindings(code, ast, markCommittedName, captureCompletionName);
 
   let prelude = [
     \`const \${markCommittedName} = import.meta.__opencodeMarkCommitted;\`,
     \`const \${markPreludeName} = import.meta.__opencodeMarkPrelude;\`,
+    \`const \${captureCompletionName} = import.meta.__opencodeCaptureCompletion;\`,
     "delete import.meta.__opencodeMarkCommitted;",
     "delete import.meta.__opencodeMarkPrelude;",
+    "delete import.meta.__opencodeCaptureCompletion;",
   ].join("\\n");
   prelude += "\\n";
   if (previousModule && priorBindings.length) {
@@ -852,6 +859,7 @@ async function handleExec(message) {
   let nextBindings = [];
   let linked = false;
   let preludeCompleted = false;
+  let completionValue;
   const committed = new Set();
 
   try {
@@ -870,6 +878,9 @@ async function handleExec(message) {
           meta.__opencodeMarkCommitted = (...names) => names.forEach((name) => committed.add(name));
           meta.__opencodeMarkPrelude = () => {
             preludeCompleted = true;
+          };
+          meta.__opencodeCaptureCompletion = (value) => {
+            completionValue = value;
           };
         },
         importModuleDynamically(specifier, referrer) {
@@ -898,7 +909,18 @@ async function handleExec(message) {
         const unhandled = imageResults.find((result) => !result.ok && !result.observation.observed);
         if (unhandled) throw unhandled.error;
       }
-      return [...logs, ...execState.emittedText].join("\\n");
+      const completion = completionValue === undefined
+        ? []
+        : [inspect(completionValue, { depth: 4, colors: false })];
+      if (completion.length) {
+        const bytes = Buffer.byteLength(completion[0]) + (logs.length || execState.emittedText.length ? 1 : 0);
+        if (execState.outputBytes + bytes > MAX_OUTPUT_BYTES) {
+          completion[0] = \`[js_repl output truncated at \${MAX_OUTPUT_BYTES} bytes]\`;
+        } else {
+          execState.outputBytes += bytes;
+        }
+      }
+      return [...logs, ...execState.emittedText, ...completion].join("\\n");
     });
 
     previousModule = module;
@@ -956,8 +978,8 @@ process.stdin.on("data", (chunk) => {
 });
 `
 
-type Attachment = { type: "file"; mime: string; url: string; filename?: string }
-type Result = { output: string; attachments: Attachment[] }
+export type Attachment = { type: "file"; mime: string; url: string; filename?: string }
+export type Result = { output: string; attachments: Attachment[] }
 type Pending = { id: string; resolve(result: Result): void; reject(error: Error): void }
 type KernelProcess = ChildProcessWithoutNullStreams & {
   stdio: [NodeJS.WritableStream, NodeJS.ReadableStream, NodeJS.ReadableStream, NodeJS.ReadableStream]
@@ -975,10 +997,6 @@ const checkedNodes = new Map<string, Promise<void>>()
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
-}
-
-function abortError() {
-  return new DOMException("js_repl execution aborted; kernel continues running", "AbortError")
 }
 
 function parseVersion(value: string) {
@@ -1227,10 +1245,14 @@ class ReplController {
     this.directory = directory
   }
 
-  execute(code: string, timeoutMs: number | undefined, signal: AbortSignal) {
+  matchesDirectory(directory: string) {
+    return this.directory === directory
+  }
+
+  execute(code: string, timeoutMs: number | undefined) {
     if (!code.trim()) return Promise.reject(new Error("code must contain JavaScript source"))
     const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS
-    return this.enqueue(() => this.executeNow(code, timeout, signal))
+    return this.enqueue(() => this.executeNow(code, timeout))
   }
 
   async dispose() {
@@ -1249,11 +1271,9 @@ class ReplController {
     return result
   }
 
-  private async executeNow(code: string, timeoutMs: number, signal: AbortSignal) {
+  private async executeNow(code: string, timeoutMs: number) {
     if (this.disposed) throw new Error("js_repl controller is disposed")
-    if (signal.aborted) throw abortError()
     const child = await this.ensure()
-    if (signal.aborted) throw abortError()
     const id = `${this.sessionID}-${++this.request}`
     return new Promise<Result>((resolve, reject) => {
       let settled = false
@@ -1261,7 +1281,6 @@ class ReplController {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        signal.removeEventListener("abort", onAbort)
         if (this.pending?.id === id) this.pending = undefined
         if (error) reject(error)
         else resolve(result ?? { output: "", attachments: [] })
@@ -1271,10 +1290,8 @@ class ReplController {
         if (this.pending?.id === id) this.pending = undefined
         finish(error)
       }
-      const onAbort = () => abandon(abortError())
       const timer = setTimeout(() => abandon(new Error("js_repl execution timed out; kernel continues running and later calls will wait behind it")), timeoutMs)
       this.pending = { id, resolve: (result) => finish(undefined, result), reject: (error) => finish(error) }
-      signal.addEventListener("abort", onAbort, { once: true })
       child.stdin.write(`${JSON.stringify({ type: "exec", id, code })}\n`, (error) => {
         if (error) this.fail(child, new Error(`Failed to write to js_repl kernel: ${error.message}`))
       })
@@ -1446,18 +1463,6 @@ class ReplController {
     await this.removeScratch()
   }
 
-  // Synchronous best-effort teardown for the process "exit" event, which
-  // cannot await asynchronous dispose().
-  terminateForExit() {
-    const child = this.child
-    if (child && child.exitCode === null && !child.killed) {
-      try { child.kill("SIGKILL") } catch { /* already exited */ }
-    }
-    // The scratch dir is deliberately left in place: a dying Chromium can
-    // recreate profile files for a second or two, so any rm here races it.
-    // The startup sweep removes the dir deterministically via owner.json
-    // once this service's pid is dead.
-  }
 }
 
 function waitForChildClose(child: KernelProcess, ms: number) {
@@ -1474,13 +1479,6 @@ function waitForChildClose(child: KernelProcess, ms: number) {
     child.once("close", onClose)
   })
 }
-
-// Instance-scoped teardown. This service process owns every controller in the
-// map, so shutting it down only ever affects kernels, browsers and profile
-// dirs that belong to THIS OpenCode instance; other instances live in their
-// own service processes and are never touched.
-let cleanupInstalled = false
-let shuttingDown = false
 
 const SCRATCH_PREFIX = "opencode-js-repl-"
 const OWNERLESS_SCRATCH_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -1501,11 +1499,6 @@ async function sweepStaleScratchDirs() {
   } catch {
     return
   }
-  const liveScratches = new Set<string>()
-  for (const controller of controllers.values()) {
-    const scratch = (controller as unknown as { scratch?: string }).scratch
-    if (scratch) liveScratches.add(scratch)
-  }
   const removed: string[] = []
   const removeKnownResidue = async (directory: string) => {
     await rm(directory, { recursive: true, force: true }).catch(() => undefined)
@@ -1514,7 +1507,6 @@ async function sweepStaleScratchDirs() {
   for (const entry of entries) {
     if (!entry.startsWith(SCRATCH_PREFIX)) continue
     const directory = join(tmpdir(), entry)
-    if (liveScratches.has(directory)) continue
     try {
       if (!(await stat(directory)).isDirectory()) continue
     } catch {
@@ -1548,113 +1540,62 @@ async function sweepStaleScratchDirs() {
   // a reappearing directory is safe to remove once more.
   setTimeout(() => {
     for (const directory of removed) {
-      if (!liveScratches.has(directory)) void rm(directory, { recursive: true, force: true }).catch(() => undefined)
+      void rm(directory, { recursive: true, force: true }).catch(() => undefined)
     }
   }, 3_000).unref()
 }
-void sweepStaleScratchDirs().catch(() => undefined)
+export class ReplRuntime {
+  private readonly controllers = new Map<string, ReplController>()
+  private disposed = false
 
-async function disposeControllersForShutdown() {
-  const snapshot = Array.from(controllers.values())
-  await Promise.allSettled(snapshot.map((controller) => controller.disposeForShutdown()))
-  controllers.clear()
-}
+  constructor() {
+    void sweepStaleScratchDirs().catch(() => undefined)
+  }
 
-function installInstanceCleanup() {
-  if (cleanupInstalled) return
-  cleanupInstalled = true
-  const SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"]
-  const exitCodes: Partial<Record<NodeJS.Signals, number>> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }
-  const handlers = new Map<NodeJS.Signals, () => void>()
-  const reemit = (signal: NodeJS.Signals) => {
-    for (const [name, fn] of handlers) process.off(name, fn)
-    try {
-      process.kill(process.pid, signal)
-    } catch {
-      process.exit(exitCodes[signal] ?? 128)
+  async execute(sessionID: string, directory: string, code: string, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    if (this.disposed) throw new Error("js_repl runtime is disposed")
+    let controller = this.controllers.get(sessionID)
+    if (controller && !controller.matchesDirectory(directory)) {
+      this.controllers.delete(sessionID)
+      await controller.dispose()
+      controller = undefined
     }
-  }
-  for (const signal of SIGNALS) {
-    const handler = () => {
-      // Re-signals (or a concurrent signal) fall through to the re-emit path.
-      if (shuttingDown) return reemit(signal)
-      shuttingDown = true
-      void disposeControllersForShutdown().then(() => reemit(signal), () => reemit(signal))
+    if (!controller) {
+      controller = new ReplController(sessionID, directory)
+      this.controllers.set(sessionID, controller)
     }
-    handlers.set(signal, handler)
-    process.on(signal, handler)
+    return controller.execute(code, timeoutMs)
   }
-  // Last-resort sweep for exits that bypassed the signal handlers; only
-  // synchronous work is possible inside an "exit" listener.
-  process.once("exit", () => {
-    for (const controller of controllers.values()) controller.terminateForExit()
-    controllers.clear()
-  })
-}
 
-function controllerFor(sessionID: string, directory: string) {
-  let controller = controllers.get(sessionID)
-  if (!controller) {
-    controller = new ReplController(sessionID, directory)
-    controllers.set(sessionID, controller)
+  async reset(sessionID: string) {
+    const controller = this.controllers.get(sessionID)
+    if (!controller) return false
+    this.controllers.delete(sessionID)
+    await controller.dispose()
+    return true
   }
-  installInstanceCleanup()
-  return controller
-}
 
-async function removeController(sessionID: string) {
-  const controller = controllers.get(sessionID)
-  if (!controller) return false
-  controllers.delete(sessionID)
-  await controller.dispose()
-  return true
-}
+  async dispose() {
+    if (this.disposed) return
+    this.disposed = true
+    const controllers = Array.from(this.controllers.values())
+    this.controllers.clear()
+    await Promise.allSettled(controllers.map((controller) => controller.disposeForShutdown()))
+  }
 
-export default tool({
-   description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. When called from Code Mode, keep Node.js source inside tools.js_repl({ code: ... }); never send import(...) or require(...) as top-level execute orchestration code. Send plain JavaScript in code without markdown fences. The kernel restores line terminators cooked by Code Mode template literals when they occur inside quoted REPL strings. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). A timeout or cancellation ends only the tool call: the kernel and cell continue running, and later calls wait behind it. Use js_repl_reset to stop a stuck cell. This is a trusted local-code runtime, not a sandbox.",
-  args: {
-    code: tool.schema.string().min(1).describe("Plain Node.js source to execute in the REPL. In Code Mode this must be the code property of tools.js_repl, not top-level execute orchestration source. Do not wrap it in JSON or markdown fences."),
-    timeout_ms: tool.schema.number().int().min(1).max(MAX_TIMEOUT_MS).optional().describe(`Execution timeout in milliseconds. Defaults to ${DEFAULT_TIMEOUT_MS}.`),
-  },
-  async execute(args, context) {
-    await context.ask({ permission: "js_repl", patterns: ["execute"], always: ["execute"], metadata: { warning: "JavaScript runs in Node with the current user's filesystem and network privileges." } })
-    const timeout = args.timeout_ms ?? DEFAULT_TIMEOUT_MS
-    context.metadata({ title: "JavaScript REPL", metadata: { timeout_ms: timeout } })
-    const result = await controllerFor(context.sessionID, context.directory).execute(args.code, timeout, context.abort)
-    return { title: "JavaScript REPL", output: result.output || "JavaScript executed successfully (no console output).", attachments: result.attachments, metadata: { timeout_ms: timeout } }
-  },
-})
-
-export const reset = tool({
-  description: "Reset the persistent JavaScript kernel for the current OpenCode session, clearing all bindings and imported state.",
-  args: {},
-  async execute(_args, context) {
-    context.metadata({ title: "Reset JavaScript REPL" })
-    const didReset = await removeController(context.sessionID)
-    return { title: "Reset JavaScript REPL", output: didReset ? "JavaScript REPL kernel reset." : "JavaScript REPL kernel was not initialized." }
-  },
-})
-
-export const playwright_setup = tool({
-  description: "Install rebrowser-playwright and its matching Chromium once in the shared OpenCode cache for use by js_repl across all workspaces.",
-  args: {
-    force: tool.schema.boolean().optional().describe("Reinstall Playwright and Chromium even when the shared cache is already ready."),
-  },
-  async execute(args, context) {
-    await context.ask({ permission: "js_repl", patterns: ["playwright_setup"], always: ["playwright_setup"], metadata: { warning: "This downloads rebrowser-playwright and Chromium into a shared user cache." } })
+  async setupPlaywright(force = false) {
     const directory = playwrightCacheDirectory()
     const marker = join(directory, `.chromium-${PLAYWRIGHT_VERSION}`)
     const playwrightPackage = join(directory, "node_modules", "playwright", "package.json")
     const playwrightCorePackage = join(directory, "node_modules", "playwright-core", "package.json")
     const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), REBROWSER_PATCHES_RUNTIME_FIX_MODE: process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE ?? "addBinding" }
-    context.metadata({ title: "Set Up Shared Playwright" })
     await mkdir(directory, { recursive: true })
     // Everything that mutates the shared cache (package install, source
     // patching, browser download, marker) runs under one inter-process lock.
     await withCacheLock(join(directory, ".playwright-setup"), async () => {
       const packageReady = await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)
         && await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION)
-      if (args.force || !packageReady) {
+      if (force || !packageReady) {
         await run(process.env.OPENCODE_PLAYWRIGHT_NPM_PATH ?? "npm", ["install", "--prefix", directory, `playwright@npm:${PLAYWRIGHT_PACKAGE}@${PLAYWRIGHT_VERSION}`], environment)
         await rm(marker, { force: true })
       }
@@ -1662,7 +1603,7 @@ export const playwright_setup = tool({
         throw new Error(`Playwright setup did not install ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION} and its matching core package`)
       }
       await ensureRebrowserFrameContextFix(directory)
-      const markerReady = !args.force && (await exists(marker)) && (await chromiumExecutableExists(directory))
+      const markerReady = !force && (await exists(marker)) && (await chromiumExecutableExists(directory))
       if (!markerReady) {
         await run(process.env.OPENCODE_PLAYWRIGHT_NPX_PATH ?? "npx", ["--prefix", directory, "playwright", "install", "chromium"], environment)
         if (!(await chromiumExecutableExists(directory))) {
@@ -1671,6 +1612,11 @@ export const playwright_setup = tool({
         await writeFile(marker, "")
       }
     })
-    return { title: "Set Up Shared Playwright", output: `Shared ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION}, its frame-context navigation fix and Chromium are ready at ${directory}.` }
-  },
-})
+    return `Shared ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION}, its frame-context navigation fix and Chromium are ready at ${directory}.`
+  }
+}
+
+export const limits = {
+  defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+  maxTimeoutMs: MAX_TIMEOUT_MS,
+} as const

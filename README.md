@@ -22,24 +22,70 @@ stealth runtime, which includes a session profile and managed input methods
 such as `await stealth.click(page, locator)`. It does not guarantee that a site
 cannot detect automation.
 
+## Browser use
+
+The addon gives an agent a persistent browser. It can open an application, read
+JavaScript-rendered content, inspect visible controls, fill forms, follow the
+user-facing flow, interact with web interfaces, and capture screenshots for
+review.
+
+The same workflow supports end-to-end QA, research, and routine browser
+operations. For example, a request to verify a staging signup flow can lead the
+agent to:
+
+1. Open the staging site's origin.
+2. Complete the signup form with test data.
+3. Follow the visible confirmation flow.
+4. Verify the resulting dashboard or error state.
+5. Report the result with screenshots and any layout or interaction problems.
+
+The agent works from the live page and visible UI. It can handle content that
+appears after JavaScript runs and controls hosted in frames or open shadow
+roots. A research request can ask it to open current pages, read their
+contents, and summarize what it observed during the session.
+
+Use local mode for applications running in this workspace or on the local
+machine, Electron mode for desktop applications, and managed remote mode for
+remote websites. Remote use must remain within the user's authorized scope.
+The managed runtime does not solve CAPTCHAs, bypass access controls, defeat
+rate limits, or guarantee that a site will permit automated access.
+
 ## Install
 
-This project uses the OpenCode V2 plugin API. Copy `plugins/`, `tools/` and
-`skills/` together into the global OpenCode config directory:
+This project uses the OpenCode V2 plugin API. Installation requires copying the
+shipped files and making the plugin dependency available from the OpenCode
+config directory.
+
+Before updating an existing global installation, back it up:
+
+```sh
+cp -a ~/.config/opencode ~/.config/opencode.backup
+```
+
+Run the following from the directory containing this repository. Copy explicit
+payload directories rather than replacing the global config directory:
+
+```sh
+mkdir -p ~/.config/opencode/plugins ~/.config/opencode/skills/playwright-interactive
+rm -f ~/.config/opencode/plugins/js-repl.ts ~/.config/opencode/tools/js_repl.ts
+rm -f ~/.config/opencode/tools/LICENSE.txt ~/.config/opencode/tools/NOTICE.txt
+rm -f ~/.config/opencode/skills/playwright-interactive/LICENSE.txt ~/.config/opencode/skills/playwright-interactive/NOTICE.txt
+cp -R plugins/js-repl ~/.config/opencode/plugins/
+cp skills/playwright-interactive/SKILL.md ~/.config/opencode/skills/playwright-interactive/
+cp -R skills/playwright-interactive/scripts ~/.config/opencode/skills/playwright-interactive/
+```
+
+The installed layout is:
 
 ```text
 ~/.config/opencode/
   plugins/
-    js-repl.ts
-  tools/
-    js_repl.ts
-    LICENSE.txt
-    NOTICE.txt
+    js-repl/
+      index.ts
+      runtime.ts
   skills/
     playwright-interactive/
       SKILL.md
-      LICENSE.txt
-      NOTICE.txt
       scripts/
         stealth-runtime.mjs
 ```
@@ -48,36 +94,43 @@ For a project-only install, put the same directories under
 `<project>/.opencode/`. Keep the full skill directory. The startup code needs
 `scripts/stealth-runtime.mjs`, not only `SKILL.md`.
 
-Install the V2 plugin package in the same config directory. Pin an exact
-snapshot that ships the V1 tool subpath used by `tools/js_repl.ts`
-(`@opencode-ai/plugin/v1`) rather than a moving tag:
+Install the V2 plugin package in the same config directory using the `next`
+dist-tag:
 
 ```sh
-# Global install
-npm install --prefix ~/.config/opencode @opencode-ai/plugin@0.0.0-next-17055
+cd ~/.config/opencode
+npm install @opencode-ai/plugin@next
+```
 
-# Project-only install
-npm install --prefix .opencode @opencode-ai/plugin@0.0.0-next-17055
+For a project-only install, copy the same payload directories under
+`<project>/.opencode/`, then install the dependency there:
+
+```sh
+cd <project>/.opencode
+npm install @opencode-ai/plugin@next
 ```
 
 OpenCode discovers plugins in `.opencode/plugins/` and
-`~/.config/opencode/plugins/` automatically. No `plugins` config entry is
-needed for this layout. Check that the plugin loaded with:
+`~/.config/opencode/plugins/` automatically. No plugin config entry is needed
+for this layout. The optional `opencode.jsonc.example` shows an explicit
+permission rule to merge into an existing config. Restart the V2 service after
+installing or updating dependencies:
 
 ```sh
-opencode2 api get /api/plugin
+opencode2 service restart
+```
+
+Check that the plugin loaded:
+
+```sh
+opencode2 api get "/api/plugin?location[directory]=$(pwd)"
 ```
 
 The returned list should contain `local.js-repl`.
 
 On its first run, `js_repl` installs Meriyah in `~/.cache/opencode`. Later
 sessions reuse that installation. OpenCode reloads discovered plugin and
-config files when they change. After updating `@opencode-ai/plugin` or another
-dependency, restart the service:
-
-```sh
-opencode2 service restart
-```
+config files when they change.
 
 ## Requirements
 
@@ -96,6 +149,9 @@ The `local.js-repl` plugin registers these tools:
 
 `js_repl` accepts `code` and an optional `timeout_ms` from 1 to 300000. The
 default is 30000 milliseconds. Send plain JavaScript without Markdown fences.
+Like a browser console, it returns the value of the final expression when that
+value is not `undefined`. Use `2 + 2` when only the result is needed;
+`console.log()` remains useful for intermediate values and labels.
 
 When OpenCode exposes the tool through Code Mode, `execute` only accepts
 orchestration syntax. Keep imports and all other Node.js source inside the
@@ -144,23 +200,20 @@ The kernel exposes `opencode.cwd`, `opencode.homeDir`, `opencode.tmpDir`,
 Image attachments may be PNG, JPEG, WebP or GIF. Each image is limited to 5
 MiB, with at most four images per execution.
 
-A timeout or cancellation stops the tool call but does not stop its cell. The
-cell keeps running in the kernel, and later calls wait behind it. Check the
-resulting state before repeating an action. Use `js_repl_reset` to stop a stuck
-cell.
+A timeout stops the tool call but does not stop its cell. The cell keeps
+running in the kernel, and later calls wait behind it. Check the resulting
+state before repeating an action. Use `js_repl_reset` to stop a stuck cell.
 
 Close browser resources before resetting the REPL. The OpenCode background
 service owns the plugin, so closing the TUI may leave the kernel running. Reset
 long-lived sessions when they no longer need the REPL.
 
-When the OpenCode service stops (stop, restart, or shutdown signals), the
-plugin performs instance-scoped teardown: every kernel belonging to that
-service exits, its browsers and Electron apps close through Playwright's
-orderly shutdown, and each session's scratch directory — including its
-stealth profile — is removed; forced-exit residue is swept on the next
-service start. Browsers, kernels and profiles belonging to other OpenCode
-instances (separate service processes) are never touched: scratch dirs are
-only removed once the owning service process is verifiably dead.
+When the plugin is reloaded, disabled, or stopped with the OpenCode service,
+its V2 cleanup function closes every kernel owned by that plugin instance.
+Browsers and Electron apps close through Playwright's orderly shutdown, and
+each session's scratch directory, including its stealth profile, is removed.
+Forced-exit residue is swept on the next service start. Other OpenCode service
+instances own separate kernels and profiles and are not touched.
 
 Interactive browser sessions intentionally remain open after an agent finishes
 a task. This preserves the visible result for inspection and lets later turns
@@ -330,5 +383,4 @@ An `allow` rule for the `js_repl` action permits arbitrary local code
 execution.
 
 The runtime is adapted from OpenAI Codex revision
-`219c65dc2f7a2fdb2adef73d572189e80b7470e5`. See `tools/NOTICE.txt` and
-`tools/LICENSE.txt`.
+`219c65dc2f7a2fdb2adef73d572189e80b7470e5`.

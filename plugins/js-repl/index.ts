@@ -1,0 +1,125 @@
+import { Plugin } from "@opencode-ai/plugin"
+import { ReplRuntime, limits } from "./runtime.ts"
+
+const executeInput = {
+  type: "object",
+  properties: {
+    code: {
+      type: "string",
+      minLength: 1,
+      description: "Plain Node.js source for the REPL. Keep imports here; do not place them in top-level Code Mode execute source.",
+    },
+    timeout_ms: {
+      type: "integer",
+      minimum: 1,
+      maximum: limits.maxTimeoutMs,
+      description: `Execution timeout in milliseconds. Defaults to ${limits.defaultTimeoutMs}.`,
+    },
+  },
+  required: ["code"],
+  additionalProperties: false,
+} as const
+
+const resetInput = {
+  type: "object",
+  properties: {},
+  additionalProperties: false,
+} as const
+
+const setupInput = {
+  type: "object",
+  properties: {
+    force: {
+      type: "boolean",
+      description: "Reinstall Playwright and Chromium even when the shared cache is already ready.",
+    },
+  },
+  additionalProperties: false,
+} as const
+
+const textOutput = { type: "string" } as const
+
+export default Plugin.define({
+  id: "local.js-repl",
+  setup: async (context) => {
+    const runtime = new ReplRuntime()
+    const eventsAbort = new AbortController()
+
+    await context.tool.transform((tools) => {
+      tools.add({
+        name: "js_repl",
+        description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. When called from Code Mode, keep Node.js source inside tools.js_repl({ code: ... }); never send import(...) or require(...) as top-level execute orchestration code. Send plain JavaScript without Markdown fences. The final expression value is returned automatically when it is not undefined; console.log is unnecessary for a value such as 2 + 2. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). A timeout ends only the tool call: the kernel and cell continue running, and later calls wait behind it. This is a trusted local-code runtime, not a sandbox.",
+        input: executeInput,
+        output: textOutput,
+        options: { permission: "js_repl" },
+        execute: async (input, toolContext) => {
+          const args = input as { code: string; timeout_ms?: number }
+          const timeout = args.timeout_ms ?? limits.defaultTimeoutMs
+          await toolContext.progress({ title: "JavaScript REPL", timeout_ms: timeout })
+          const session = await context.session.get({ sessionID: toolContext.sessionID })
+          const result = await runtime.execute(toolContext.sessionID, session.location.directory, args.code, timeout)
+          const text = result.output || "JavaScript executed successfully (no console output)."
+          const files = result.attachments.map((attachment) => ({
+            type: "file" as const,
+            uri: attachment.url,
+            mime: attachment.mime,
+            ...(attachment.filename ? { name: attachment.filename } : {}),
+          }))
+          return {
+            output: text,
+            content: files.length ? [{ type: "text" as const, text }, ...files] : text,
+            metadata: { timeout_ms: timeout },
+          }
+        },
+      })
+
+      tools.add({
+        name: "js_repl_reset",
+        description: "Reset the persistent JavaScript kernel for the current OpenCode session, clearing all bindings and imported state.",
+        input: resetInput,
+        output: textOutput,
+        options: { permission: "js_repl" },
+        execute: async (_input, toolContext) => {
+          await toolContext.progress({ title: "Reset JavaScript REPL" })
+          const didReset = await runtime.reset(toolContext.sessionID)
+          const output = didReset ? "JavaScript REPL kernel reset." : "JavaScript REPL kernel was not initialized."
+          return { output, content: output }
+        },
+      })
+
+      tools.add({
+        name: "js_repl_playwright_setup",
+        description: "Install rebrowser-playwright and its matching Chromium once in the shared OpenCode cache for use by js_repl across all workspaces.",
+        input: setupInput,
+        output: textOutput,
+        options: { permission: "js_repl" },
+        execute: async (input, toolContext) => {
+          const args = input as { force?: boolean }
+          await toolContext.progress({ title: "Set Up Shared Playwright" })
+          const output = await runtime.setupPlaywright(args.force)
+          return { output, content: output }
+        },
+      })
+    })
+
+    const eventTask = (async () => {
+      try {
+        for await (const event of context.event.subscribe({ signal: eventsAbort.signal })) {
+          if (event.type === "session.deleted" || event.type === "session.moved") {
+            await runtime.reset(event.data.sessionID)
+          }
+        }
+      } catch (error) {
+        if (!eventsAbort.signal.aborted) {
+          console.error("js_repl session event subscription stopped:", error)
+        }
+      }
+    })()
+
+    return async () => {
+      eventsAbort.abort()
+      await runtime.dispose()
+      await eventTask
+    }
+  },
+})
