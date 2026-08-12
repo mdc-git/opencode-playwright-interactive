@@ -33,7 +33,7 @@ const vm = require("node:vm");
 
 const { SourceTextModule, SyntheticModule } = vm;
 const PROTOCOL_FD = 3;
-const meriyahRequire = createRequire(process.env.OPENCODE_JS_REPL_MERIYAH_RESOLUTION_PATH ?? __filename);
+const meriyahRequire = createRequire(process.env.JS_REPL_INTERNAL_MERIYAH_PATH ?? __filename);
 const meriyahPromise = Promise.resolve(meriyahRequire("meriyah")).then((module) => module.default ?? module);
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -93,14 +93,15 @@ createHook({
 }).enable();
 
 const internalBindingSalt = (() => {
-  const raw = process.env.OPENCODE_JS_REPL_SESSION_ID ?? "";
+  const raw = process.env.JS_REPL_INTERNAL_SESSION_ID ?? "";
   return raw.replace(/[^A-Za-z0-9_$]/g, "_") || "session";
 })();
 
 const cwd = process.cwd();
-const tmpDir = process.env.OPENCODE_JS_REPL_TMP_DIR || cwd;
+const tmpDir = process.env.JS_REPL_INTERNAL_TMP_DIR || cwd;
 const homeDir = process.env.HOME ?? null;
-const sessionId = process.env.OPENCODE_JS_REPL_SESSION_ID || null;
+const sessionId = process.env.JS_REPL_INTERNAL_SESSION_ID || null;
+const skillDir = process.env.JS_REPL_INTERNAL_SKILL_DIR || null;
 let browserBindingCounter = 0;
 const workspaceRequire = createRequire(path.join(cwd, "__opencode_js_repl__.cjs"));
 
@@ -275,7 +276,7 @@ function bindBrowser({ browser, context: browserContext, browserId, profileKind 
   });
 }
 
-context.opencode = Object.freeze({ cwd, homeDir, tmpDir, sessionId, bindBrowser, emitImage, emitText });
+context.opencode = Object.freeze({ cwd, homeDir, tmpDir, sessionId, skillDir, bindBrowser, emitImage, emitText });
 context.tmpDir = tmpDir;
 
 const builtinModuleSet = new Set([
@@ -285,7 +286,7 @@ const builtinModuleSet = new Set([
 const moduleSearchBases = (() => {
   const bases = [];
   const seen = new Set();
-  const configured = process.env.OPENCODE_JS_REPL_NODE_MODULE_DIRS ?? "";
+  const configured = process.env.JS_REPL_INTERNAL_NODE_MODULE_DIRS ?? "";
   for (const entry of configured.split(path.delimiter)) {
     const trimmed = entry.trim();
     if (!trimmed) continue;
@@ -1132,16 +1133,40 @@ async function withCacheLock<T>(target: string, operation: () => Promise<T>): Pr
   }
 }
 
-function playwrightCacheDirectory() {
-  return process.env.OPENCODE_PLAYWRIGHT_CACHE_DIR ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "opencode", "playwright")
+type RuntimeOptions = Readonly<{
+  nodePath?: unknown
+  nodeModuleDirs?: unknown
+  replCacheDir?: unknown
+  playwrightCacheDir?: unknown
+  npmPath?: unknown
+  playwrightNpmPath?: unknown
+  playwrightNpxPath?: unknown
+}>
+
+function optionString(options: RuntimeOptions, key: keyof RuntimeOptions, fallback: string) {
+  const value = options[key]
+  return typeof value === "string" && value.length > 0 ? value : fallback
 }
 
-function replCacheDirectory() {
-  return process.env.OPENCODE_JS_REPL_CACHE_DIR ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "opencode")
+function optionStrings(options: RuntimeOptions, key: keyof RuntimeOptions) {
+  const value = options[key]
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) : []
 }
 
-function playwrightBrowserDirectory() {
-  return process.env.PLAYWRIGHT_BROWSERS_PATH ?? join(playwrightCacheDirectory(), "browsers")
+function defaultCacheDirectory() {
+  return join(homedir(), ".cache", "opencode")
+}
+
+function playwrightCacheDirectory(options: RuntimeOptions) {
+  return optionString(options, "playwrightCacheDir", join(defaultCacheDirectory(), "playwright"))
+}
+
+function replCacheDirectory(options: RuntimeOptions) {
+  return optionString(options, "replCacheDir", defaultCacheDirectory())
+}
+
+function playwrightBrowserDirectory(options: RuntimeOptions) {
+  return join(playwrightCacheDirectory(options), "browsers")
 }
 
 async function exists(path: string) {
@@ -1166,7 +1191,7 @@ async function packageMatches(file: string, name: string, version: string) {
 // survived (users clean caches, disks fill, installs crash). Resolve the
 // expected executable from playwright-core's own browser registry and check
 // that it is actually on disk.
-async function chromiumExecutableExists(directory: string) {
+async function chromiumExecutableExists(directory: string, browserDirectory: string) {
   try {
     const registry = JSON.parse(await readFile(join(directory, "node_modules", "playwright-core", "browsers.json"), "utf8")) as {
       browsers?: Array<{ name?: string; revision?: string; browserRevision?: string }>
@@ -1180,7 +1205,7 @@ async function chromiumExecutableExists(directory: string) {
         : process.platform === "win32"
           ? join(`chromium-${revision}`, "chrome-win", "chrome.exe")
           : join(`chromium-${revision}`, "chrome-linux", "chrome")
-    return await exists(join(playwrightBrowserDirectory(), relative))
+    return await exists(join(browserDirectory, relative))
   } catch {
     return false
   }
@@ -1232,15 +1257,15 @@ async function run(command: string, args: string[], environment: NodeJS.ProcessE
   }
 }
 
-async function ensureMeriyah() {
-  const directory = replCacheDirectory()
+async function ensureMeriyah(options: RuntimeOptions) {
+  const directory = replCacheDirectory(options)
   const packageFile = join(directory, "node_modules", "meriyah", "package.json")
   if (await packageMatches(packageFile, "meriyah", MERIYAH_VERSION)) return
   await mkdir(directory, { recursive: true })
   await withCacheLock(join(directory, ".meriyah-install"), async () => {
     // Re-check under the lock: another process may have finished installing.
     if (await packageMatches(packageFile, "meriyah", MERIYAH_VERSION)) return
-    await run(process.env.OPENCODE_JS_REPL_NPM_PATH ?? "npm", ["install", "--prefix", directory, `meriyah@${MERIYAH_VERSION}`], process.env)
+    await run(optionString(options, "npmPath", "npm"), ["install", "--prefix", directory, `meriyah@${MERIYAH_VERSION}`], process.env)
   })
 }
 
@@ -1280,6 +1305,8 @@ function attachments(value: unknown): Attachment[] {
 class ReplController {
   private readonly sessionID: string
   private readonly directory: string
+  private readonly options: RuntimeOptions
+  private readonly skillDirectory: string
   private child?: KernelProcess
   private reader?: ReadLineInterface
   private pending?: Pending
@@ -1290,9 +1317,11 @@ class ReplController {
   private disposed = false
   private request = 0
 
-  constructor(sessionID: string, directory: string) {
+  constructor(sessionID: string, directory: string, options: RuntimeOptions, skillDirectory: string) {
     this.sessionID = sessionID
     this.directory = directory
+    this.options = options
+    this.skillDirectory = skillDirectory
   }
 
   matchesDirectory(directory: string) {
@@ -1350,9 +1379,9 @@ class ReplController {
 
   private async ensure() {
     if (this.child && !this.child.killed && this.child.exitCode === null) return this.child
-    const node = process.env.OPENCODE_JS_REPL_NODE_PATH ?? "node"
+    const node = optionString(this.options, "nodePath", "node")
     await checkNode(node)
-    await ensureMeriyah()
+    await ensureMeriyah(this.options)
     this.scratch ??= await mkdtemp(join(tmpdir(), "opencode-js-repl-"))
     const source = KERNEL_SOURCE
     const kernelPath = join(this.scratch, "kernel.cjs")
@@ -1360,13 +1389,13 @@ class ReplController {
     this.stderrTail = []
     this.stderrFragment = ""
     const moduleDirs = [
-      ...(process.env.OPENCODE_JS_REPL_NODE_MODULE_DIRS?.split(delimiter).filter(Boolean) ?? []),
-      join(replCacheDirectory(), "node_modules"),
-      join(playwrightCacheDirectory(), "node_modules"),
+      ...optionStrings(this.options, "nodeModuleDirs"),
+      join(replCacheDirectory(this.options), "node_modules"),
+      join(playwrightCacheDirectory(this.options), "node_modules"),
     ]
     const child = spawn(node, ["--no-warnings", "--experimental-vm-modules", kernelPath], {
       cwd: this.directory,
-      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), OPENCODE_JS_REPL_SESSION_ID: this.sessionID, OPENCODE_JS_REPL_TMP_DIR: this.scratch, OPENCODE_JS_REPL_MERIYAH_RESOLUTION_PATH: join(replCacheDirectory(), "__opencode_js_repl__.cjs"), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), REBROWSER_PATCHES_RUNTIME_FIX_MODE: process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE ?? "addBinding", OPENCODE_JS_REPL_NODE_MODULE_DIRS: moduleDirs.join(delimiter) },
+      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(this.options), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(this.options), JS_REPL_INTERNAL_SESSION_ID: this.sessionID, JS_REPL_INTERNAL_TMP_DIR: this.scratch, JS_REPL_INTERNAL_MERIYAH_PATH: join(replCacheDirectory(this.options), "__opencode_js_repl__.cjs"), JS_REPL_INTERNAL_NODE_MODULE_DIRS: moduleDirs.join(delimiter), JS_REPL_INTERNAL_SKILL_DIR: this.skillDirectory },
       stdio: ["pipe", "pipe", "pipe", "pipe"],
     }) as KernelProcess
     await new Promise<void>((resolve, reject) => {
@@ -1597,8 +1626,12 @@ async function sweepStaleScratchDirs() {
 export class ReplRuntime {
   private readonly controllers = new Map<string, ReplController>()
   private disposed = false
+  private readonly options: RuntimeOptions
+  private readonly skillDirectory: string
 
-  constructor() {
+  constructor(options: RuntimeOptions, skillDirectory: string) {
+    this.options = options
+    this.skillDirectory = skillDirectory
     void sweepStaleScratchDirs().catch(() => undefined)
   }
 
@@ -1611,7 +1644,7 @@ export class ReplRuntime {
       controller = undefined
     }
     if (!controller) {
-      controller = new ReplController(sessionID, directory)
+      controller = new ReplController(sessionID, directory, this.options, this.skillDirectory)
       this.controllers.set(sessionID, controller)
     }
     return controller.execute(code, timeoutMs)
@@ -1634,11 +1667,12 @@ export class ReplRuntime {
   }
 
   async setupPlaywright(force = false) {
-    const directory = playwrightCacheDirectory()
+    const directory = playwrightCacheDirectory(this.options)
     const marker = join(directory, `.chromium-${PLAYWRIGHT_VERSION}`)
     const playwrightPackage = join(directory, "node_modules", "playwright", "package.json")
     const playwrightCorePackage = join(directory, "node_modules", "playwright-core", "package.json")
-    const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(), REBROWSER_PATCHES_RUNTIME_FIX_MODE: process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE ?? "addBinding" }
+    const browserDirectory = playwrightBrowserDirectory(this.options)
+    const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserDirectory, REBROWSER_PATCHES_RUNTIME_FIX_MODE: "addBinding" }
     await mkdir(directory, { recursive: true })
     // Everything that mutates the shared cache (package install, source
     // patching, browser download, marker) runs under one inter-process lock.
@@ -1646,18 +1680,18 @@ export class ReplRuntime {
       const packageReady = await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)
         && await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION)
       if (force || !packageReady) {
-        await run(process.env.OPENCODE_PLAYWRIGHT_NPM_PATH ?? "npm", ["install", "--prefix", directory, `playwright@npm:${PLAYWRIGHT_PACKAGE}@${PLAYWRIGHT_VERSION}`], environment)
+        await run(optionString(this.options, "playwrightNpmPath", "npm"), ["install", "--prefix", directory, `playwright@npm:${PLAYWRIGHT_PACKAGE}@${PLAYWRIGHT_VERSION}`], environment)
         await rm(marker, { force: true })
       }
       if (!(await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)) || !(await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION))) {
         throw new Error(`Playwright setup did not install ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION} and its matching core package`)
       }
       await ensureRebrowserFrameContextFix(directory)
-      const markerReady = !force && (await exists(marker)) && (await chromiumExecutableExists(directory))
+      const markerReady = !force && (await exists(marker)) && (await chromiumExecutableExists(directory, browserDirectory))
       if (!markerReady) {
-        await run(process.env.OPENCODE_PLAYWRIGHT_NPX_PATH ?? "npx", ["--prefix", directory, "playwright", "install", "chromium"], environment)
-        if (!(await chromiumExecutableExists(directory))) {
-          throw new Error(`Chromium executable is missing from ${playwrightBrowserDirectory()} after installation`)
+        await run(optionString(this.options, "playwrightNpxPath", "npx"), ["--prefix", directory, "playwright", "install", "chromium"], environment)
+        if (!(await chromiumExecutableExists(directory, browserDirectory))) {
+          throw new Error(`Chromium executable is missing from ${browserDirectory} after installation`)
         }
         await writeFile(marker, "")
       }
