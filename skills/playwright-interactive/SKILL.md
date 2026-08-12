@@ -16,28 +16,11 @@ Use persistent `js_repl` browser handles for iterative browser and Electron QA.
 
 The words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** throughout this skill are interpreted as described in RFC 2119.
 
-### Code Mode Routing
-
-When `js_repl` is exposed inside the `execute` tool's Code Mode catalog, `execute` is only an orchestrator. Node.js source such as `import(...)`, `require(...)`, Playwright calls, and browser variables **MUST NOT** appear at the top level of `execute` code. Put all such source inside the `code` string passed to `tools.js_repl`.
-
-Call setup through `execute` with exactly this orchestration code:
+Run setup first:
 
 ```js
 return await tools.js_repl_playwright_setup({});
 ```
-
-Every later REPL example in this skill is also a `tools.js_repl` payload. If an example is not already wrapped, call it through `execute` in this form:
-
-```js
-return await tools.js_repl({
-  code: `// REPL source goes here, including any import(...) expression`,
-  timeout_ms: 30000,
-});
-```
-
-The outer `code: ` template literal cannot contain an unescaped backtick. Before wrapping a REPL snippet, replace any inner template literal with string concatenation or encode the complete snippet as a quoted JSON string. The agent **MUST NOT** nest a REPL template literal such as `` `${value}` `` inside the outer Code Mode template literal; Code Mode will parse the inner backtick as the end of `code` and fail before `js_repl` runs. Code Mode also cooks backslash escapes in the outer template; the REPL boundary restores cooked line terminators inside quoted strings before parsing, so inner expressions such as `join("\n")` work without a manual retry.
-
-The agent **MUST NOT** send a REPL example directly as `execute` orchestration code. An `execute` error saying `ImportExpression is not supported` means this routing rule was violated; retry by moving the unchanged source into `tools.js_repl({ code: ... })`, not by rewriting or removing the import.
 
 For every browser or Electron request, the agent **MUST** run setup as above, then select exactly one startup mode before the first `tools.js_repl` call:
 
@@ -409,9 +392,9 @@ Because such controls are often the dismiss button of a frame-hosted banner, dia
 
 ## The REPL Call Budget
 
-### Errors In Code Mode
+### Errors And Timeouts
 
-Code Mode preserves the message from a failed `tools.js_repl` call, so let unexpected JavaScript and Playwright errors reject normally. A timeout is different: it abandons only the tool call while the cell continues running and may commit bindings later. After a timeout, do not rerun the action; confirm the real state with one short cell, then follow the bounded diagnosis below.
+Let unexpected JavaScript and Playwright errors reject normally. A timeout is different: it abandons only the tool call while the cell continues running and may commit bindings later. After a timeout, do not rerun the action; confirm the real state with one short cell, then follow the bounded diagnosis below.
 
 Each `js_repl` call has a default duration cap. A timeout ends only the tool call: the cell and every live handle (`playwright`, `stealth`, `page`) remain in the kernel, and later calls wait behind the unfinished cell. Multi-step sequences (`click` page-timeout + `waitForTimeout(9000)` + networkidle) routinely exceed 30 seconds. To keep the session responsive:
 
