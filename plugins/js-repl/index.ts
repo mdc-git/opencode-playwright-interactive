@@ -97,7 +97,7 @@ export default Plugin.define({
         description: "Reset the persistent JavaScript kernel for the current OpenCode session, clearing all bindings and imported state.",
         input: resetInput,
         output: textOutput,
-        options: { permission: "js_repl" },
+        options: { permission: "js_repl_reset" },
         execute: (_input, toolContext) =>
           Effect.gen(function* () {
             yield* toolContext.progress({ title: "Reset JavaScript REPL" })
