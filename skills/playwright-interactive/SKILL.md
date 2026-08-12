@@ -206,6 +206,14 @@ Use locator-scoped DOM inspection or `evaluate` only to read the current page st
 
 If the information is not present, or the user asks to change application state, use the smallest necessary visible UI flow. Use managed input in remote mode and ordinary Playwright input in local mode. Do not substitute a deep link, a constructed URL, or any other shortcut for that interaction.
 
+## Fallback, Empty, And Partial States
+
+Do not treat a fallback, empty-state, loading message, error notice, or one matching heading as proof that the requested content is absent. Modern pages often keep a placeholder, failed variant, duplicate responsive variant, or collapsed summary in the DOM alongside the real content. Before reporting absence or using a fallback as the answer, inspect the complete relevant result region and reconcile all matching occurrences across the main document and frames.
+
+For content extraction, prefer the largest semantically relevant visible container over the nearest ancestor of a heading. Collect the visible text and state of every matching region, then distinguish these cases explicitly: requested content found, requested feature unavailable, still loading, or extraction ambiguous. If multiple variants disagree, do not choose the first match. Capture and inspect a screenshot, wait once for the page's normal render window, and re-read the relevant regions. Report a fallback only when the fallback state remains after that verification and no matching content is present elsewhere.
+
+Never infer absence from a short result such as a heading-only container, an empty text node, a failed narrow selector, or a single DOM occurrence. A fallback sentence is evidence about one region, not the whole page.
+
 ## Scrolling
 
 Use managed scrolling only when the current DOM/source does not already answer the request or the user requires a visible state change. To scroll the document at the current pointer position, use `await stealth.scroll(page, 850)`. To scroll a nested panel, list, or other surface, pass its controller-produced locator and the delta: `await stealth.scroll(page, panelLocator, 850)`. This moves the pointer to the intended surface before issuing the humanized wheel sequence.
