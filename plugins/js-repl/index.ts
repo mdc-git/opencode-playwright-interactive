@@ -21,7 +21,7 @@ const executeInput = {
     code: {
       type: "string",
       minLength: 1,
-      description: "Plain Node.js source for the REPL. Keep imports here; do not place them in top-level Code Mode execute source.",
+      description: "Plain Node.js source for the REPL.",
     },
     timeout_ms: {
       type: "integer",
@@ -58,11 +58,12 @@ export default Plugin.define({
   effect: Effect.fn(function* (context) {
     const skillDirectory = fileURLToPath(new URL("../../skills/playwright-interactive/", import.meta.url))
     const runtime = new ReplRuntime(context.options, skillDirectory)
+    const autoRoutedSessions = new Set<string>()
 
     yield* context.tool.transform((tools) => {
       tools.add({
         name: "js_repl",
-        description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. When called from Code Mode, keep Node.js source inside tools.js_repl({ code: ... }); never send import(...) or require(...) as top-level execute orchestration code. Send plain JavaScript without Markdown fences. The final expression value is returned automatically when it is not undefined; console.log is unnecessary for a value such as 2 + 2. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). A timeout ends only the tool call: the kernel and cell continue running, and later calls wait behind it. This is a trusted local-code runtime, not a sandbox.",
+        description: "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. Send plain JavaScript without Markdown fences. The final expression value is returned automatically when it is not undefined; console.log is unnecessary for a value such as 2 + 2. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). A timeout ends only the tool call: the kernel and cell continue running, and later calls wait behind it. This is a trusted local-code runtime, not a sandbox.",
         input: executeInput,
         output: textOutput,
         options: { permission: "js_repl" },
@@ -123,12 +124,19 @@ export default Plugin.define({
       })
     })
 
-    yield* context.session.hook("context", (event) => {
-      if (!("execute" in event.tools)) return Effect.void
-      event.system.push({
-        type: "text",
-        text: "When using js_repl through Code Mode, execute is only an orchestrator. Never put import(), require(), Playwright calls, browser variables, or other Node.js source at execute's top level. Submit the complete wrapper: return await tools.js_repl({ code: <JavaScript source string>, timeout_ms: <number> }); Copy complete wrapped examples from the playwright-interactive skill, not only their inner code value. Call setup with return await tools.js_repl_playwright_setup({});",
-      })
+    yield* context.tool.hook("execute.before", (event) => {
+      if (event.tool !== "execute" || !event.input || typeof event.input !== "object") return Effect.void
+      const input = event.input as { code?: unknown; timeout_ms?: unknown }
+      if (typeof input.code !== "string" || /tools\.js_repl\s*\(/.test(input.code)) return Effect.void
+      const startsReplRouting = /\bimport\s*\(|\brequire\s*\(/.test(input.code)
+      const continuesReplRouting = autoRoutedSessions.has(event.sessionID) && !/\btools(?:\.|\[)/.test(input.code)
+      if (!startsReplRouting && !continuesReplRouting) return Effect.void
+      const timeout =
+        typeof input.timeout_ms === "number" && Number.isFinite(input.timeout_ms)
+          ? Math.min(limits.maxTimeoutMs, Math.max(1, Math.trunc(input.timeout_ms)))
+          : limits.defaultTimeoutMs
+      input.code = `return await tools.js_repl({ code: ${JSON.stringify(input.code)}, timeout_ms: ${timeout} });`
+      autoRoutedSessions.add(event.sessionID)
       return Effect.void
     })
 
@@ -137,7 +145,10 @@ export default Plugin.define({
       .pipe(
         Stream.runForEach((event) =>
           event.type === "session.deleted" || event.type === "session.moved"
-            ? Effect.promise(() => runtime.reset(event.data.sessionID))
+            ? Effect.gen(function* () {
+                autoRoutedSessions.delete(event.data.sessionID)
+                yield* Effect.promise(() => runtime.reset(event.data.sessionID))
+              })
             : Effect.void,
         ),
         Effect.forkScoped,
