@@ -229,12 +229,6 @@ popup counts plus the latest main-document status. It does not record tokens,
 input contents, page fingerprints, or a browsing history. Diagnostics may
 include frame URLs and links needed to identify a control.
 
-The managed runtime does not solve CAPTCHAs, bypass access controls, rotate
-network identity, defeat rate limits, or retry an automated-access denial. It
-stops on challenge loops, explicit automation denials, and HTTP `403` or `429`
-responses. Authorized testing should use staging systems, provider test keys,
-narrow allowlisting, or headed human completion where appropriate.
-
 ## Plugin Options
 
 Configure the plugin through V2 plugin options. All options are optional:
