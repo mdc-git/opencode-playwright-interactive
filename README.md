@@ -59,116 +59,67 @@ access policy and rate limits.
 ## Requirements
 
 - OpenCode V2
-- Node.js 22.22.0 or newer on `PATH`
+- Node.js 22.22.0 or newer on `PATH` (used by the persistent REPL kernel)
 - npm and npx on `PATH`, unless custom executable paths are configured
 
 ## Install
 
-Clone the repository and enter it:
+Add the plugin to your `opencode.json(c)` and let OpenCode install it
+automatically from git. No manual cloning or dependency management is needed.
 
-```sh
-git clone https://github.com/mdc-git/opencode-playwright-interactive.git
-cd opencode-playwright-interactive
-```
-
-Choose one installation scope before continuing.
-
-### Global
-
-Use this option to load the plugin and skill in every OpenCode project for the
-current user:
-
-```sh
-TARGET="$HOME/.config/opencode"
-```
-
-### Project-local
-
-Use this option to load the plugin and skill only in one project. Replace
-`/path/to/project` with that project's root directory:
-
-```sh
-TARGET="/path/to/project/.opencode"
-```
-
-The remaining steps are identical for both scopes and use the selected
-`TARGET` value.
-
-Back up an existing target before replacing files with the same names:
-
-```sh
-if [ -d "$TARGET" ]; then cp -a "$TARGET" "$TARGET.backup"; fi
-```
-
-Install the plugin and its dependency:
-
-```sh
-mkdir -p "$TARGET/plugins"
-cp -R plugins/js-repl "$TARGET/plugins/"
-cd "$TARGET"
-npm install @opencode-ai/plugin@next
-```
-
-The resulting layout is:
-
-```text
-<target>/
-|-- plugins/
-|   `-- js-repl/
-|       |-- index.ts
-|       |-- runtime.ts
-|       |-- SKILL.md
-|       `-- scripts/
-|           |-- stealth-runtime.mjs
-|           |-- stealth-profile-store.mjs
-|           `-- stealth-utils.mjs
-`-- node_modules/
-```
-
-OpenCode discovers the plugin from the selected config directory. The plugin
-registers the `playwright-interactive` skill automatically; no separate skill
-directory or `opencode.json(c)` entry is required.
-
-## Plugin Options
-
-Configure the plugin through V2 plugin options. All options are optional:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [{
-    "package": "./plugins/js-repl",
-    "options": {
-      "nodePath": "node",
-      "nodeModuleDirs": [],
-      "replCacheDir": "/home/user/.cache/opencode",
-      "playwrightCacheDir": "/home/user/.cache/opencode/playwright",
-      "npmPath": "npm",
-      "playwrightNpmPath": "npm",
-      "playwrightNpxPath": "npx"
-    }
-  }]
-}
-```
-
-Paths are used as provided; shell expansion such as `~` is not performed.
-
-### Permission
-
-OpenCode asks when no matching permission rule exists. To state that policy
-explicitly, merge this rule into `$TARGET/opencode.json` or
-`$TARGET/opencode.jsonc`:
+For global use, edit `~/.config/opencode/opencode.json(c)`. For a single
+project, edit `<project>/.opencode/opencode.json(c)` or
+`<project>/opencode.json(c)`:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "permissions": [
     { "action": "js_repl", "resource": "*", "effect": "ask" }
+  ],
+  "plugins": [
+    {
+      "package": "opencode-playwright-interactive@git+https://github.com/mdc-git/opencode-playwright-interactive.git",
+      "options": {
+        "nodePath": "node",
+        "nodeModuleDirs": [],
+        "replCacheDir": "/home/user/.cache/opencode",
+        "playwrightCacheDir": "/home/user/.cache/opencode/playwright",
+        "npmPath": "npm",
+        "playwrightNpmPath": "npm",
+        "playwrightNpxPath": "npx"
+      }
+    }
   ]
 }
 ```
 
-Use `allow` to run the browser tools without prompting or `deny` to block them.
+Paths are used as provided; shell expansion such as `~` is not performed. Use
+`allow` to run the browser tools without prompting or `deny` to block them.
+
+The plugin registers the `playwright-interactive` skill automatically; no
+separate skill directory or entry is required.
+
+Restart the service after adding the entry:
+
+```sh
+opencode2 service restart
+```
+
+OpenCode fetches the repository, resolves `@opencode-ai/plugin`, `effect`, and
+other declared dependencies into an isolated cache, and loads the plugin. See
+[Verify](#verify) below to confirm it loaded.
+
+> [!NOTE]
+> If the plugin fails to load with an `NpmInstallFailedError` about a missing
+> `package.json`, a stale npm or OpenCode package cache may be referencing a
+> prior failed clone. Clear both caches and restart:
+>
+> ```sh
+> rm -rf ~/.cache/opencode/packages/opencode-playwright-interactive@git+https:*
+> npm cache clean --force
+> opencode2 service restart
+> ```
 
 ## Commands
 
@@ -277,12 +228,10 @@ network, child processes, and worker threads. An `allow` permission for
 
 ## Remove
 
-Set `TARGET` to the same global or project-local directory used during
-installation. Remove the `js_repl` permission rule from
-`$TARGET/opencode.json(c)`, then remove the plugin:
+Remove the plugin entry and `js_repl` permission rule from your
+`opencode.json(c)`, then restart:
 
 ```sh
-rm -r "$TARGET/plugins/js-repl"
 opencode2 service restart
 ```
 
