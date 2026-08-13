@@ -124,6 +124,13 @@ export default Plugin.define({
       })
     })
 
+    yield* context.command.transform((commands) => {
+      commands.update("playwright", (command) => {
+        command.description = "Open a persistent Playwright browser or Electron session for interactive QA. Pass a target URL, app path, or task description."
+        command.template = "Use the playwright-interactive skill to handle this request. Run js_repl_playwright_setup first, then select the correct startup mode (Electron, local web, or remote stealth) based on the target, complete the full startup block, and then carry out the task."
+      })
+    })
+
     yield* context.tool.hook("execute.before", (event) => {
       if (event.tool !== "execute" || !event.input || typeof event.input !== "object") return Effect.void
       const input = event.input as { code?: unknown; timeout_ms?: unknown }

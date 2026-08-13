@@ -171,6 +171,21 @@ explicitly, merge this rule into `$TARGET/opencode.json` or
 
 Use `allow` to run the browser tools without prompting or `deny` to block them.
 
+## Commands
+
+The plugin registers a `/playwright` slash command. Use it to start a browser
+QA session with a single prompt:
+
+```text
+/playwright test the staging signup flow on desktop and mobile
+/playwright open http://localhost:3000 and check the dashboard layout
+/playwright launch the Electron app and verify the settings dialog
+```
+
+The command activates the `playwright-interactive` skill, runs setup, and
+instructs the agent to select the correct startup mode before carrying out the
+task. The skill can also be activated directly without the command.
+
 ## Verify
 
 Restart the V2 service:
@@ -200,6 +215,7 @@ that installation.
 | Session cleanup | Stops and clears one session's persistent runtime. |
 | Shared browser installation | Installs the supported Playwright package and matching Chromium in a shared cache. |
 | Playwright skill | Selects the browser mode and guides inspection, interaction, screenshots, and cleanup. |
+| `/playwright` command | Shortcut that activates the skill and runs setup before the task. |
 
 ## Browser modes
 
