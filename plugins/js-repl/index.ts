@@ -1,7 +1,8 @@
-import { Plugin } from "@opencode-ai/plugin/effect"
+import { Plugin, Skill } from "@opencode-ai/plugin/effect"
 import { Error as ToolError } from "@opencode-ai/schema/tool"
 import { Effect, Stream } from "effect"
 import { fileURLToPath } from "node:url"
+import { readFileSync } from "node:fs"
 import { ReplRuntime, limits } from "./runtime.ts"
 
 const asToolError = (error: unknown) =>
@@ -56,9 +57,24 @@ const textOutput = { type: "string" } as const
 export default Plugin.define({
   id: "local.js-repl",
   effect: Effect.fn(function* (context) {
-    const skillDirectory = fileURLToPath(new URL("../../skills/playwright-interactive/", import.meta.url))
-    const runtime = new ReplRuntime(context.options, skillDirectory)
+    const pluginDir = fileURLToPath(new URL(".", import.meta.url))
+    const scriptDirectory = fileURLToPath(new URL("./scripts/", import.meta.url))
+    const runtime = new ReplRuntime(context.options, scriptDirectory)
     const autoRoutedSessions = new Set<string>()
+
+    const skillFile = fileURLToPath(new URL("./SKILL.md", import.meta.url))
+    const skillRaw = readFileSync(skillFile, "utf8")
+    const skillBody = skillRaw.replace(/^---\n[\s\S]*?\n---\n/, "")
+
+    yield* context.skill.transform((skills) => {
+      skills.add({
+        id: "playwright-interactive" as Skill.ID,
+        name: "playwright-interactive" as Skill.Name,
+        description: "Persistent Playwright browser and Electron QA through js_repl, with standard Playwright for local apps and managed stealth for remote websites. Use when opening, debugging, testing, or visually inspecting local web apps, responsive interfaces, remote websites, or Electron applications.",
+        location: pluginDir as Skill.Info["location"],
+        content: skillBody,
+      })
+    })
 
     yield* context.tool.transform((tools) => {
       tools.add({

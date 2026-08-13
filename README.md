@@ -100,13 +100,11 @@ Back up an existing target before replacing files with the same names:
 if [ -d "$TARGET" ]; then cp -a "$TARGET" "$TARGET.backup"; fi
 ```
 
-Install the plugin, complete skill
-directory, and dependency:
+Install the plugin and its dependency:
 
 ```sh
-mkdir -p "$TARGET/plugins" "$TARGET/skills"
+mkdir -p "$TARGET/plugins"
 cp -R plugins/js-repl "$TARGET/plugins/"
-cp -R skills/playwright-interactive "$TARGET/skills/"
 cd "$TARGET"
 npm install @opencode-ai/plugin@next
 ```
@@ -118,17 +116,18 @@ The resulting layout is:
 |-- plugins/
 |   `-- js-repl/
 |       |-- index.ts
-|       `-- runtime.ts
-|-- skills/
-|   `-- playwright-interactive/
+|       |-- runtime.ts
 |       |-- SKILL.md
 |       `-- scripts/
-|           `-- stealth-runtime.mjs
+|           |-- stealth-runtime.mjs
+|           |-- stealth-profile-store.mjs
+|           `-- stealth-utils.mjs
 `-- node_modules/
 ```
 
-OpenCode discovers the plugin and skill from the selected config directory. No
-plugin entry is required in `opencode.json(c)`.
+OpenCode discovers the plugin from the selected config directory. The plugin
+registers the `playwright-interactive` skill automatically; no separate skill
+directory or `opencode.json(c)` entry is required.
 
 ## Plugin Options
 
@@ -280,11 +279,10 @@ network, child processes, and worker threads. An `allow` permission for
 
 Set `TARGET` to the same global or project-local directory used during
 installation. Remove the `js_repl` permission rule from
-`$TARGET/opencode.json(c)`, then remove the plugin and skill:
+`$TARGET/opencode.json(c)`, then remove the plugin:
 
 ```sh
 rm -r "$TARGET/plugins/js-repl"
-rm -r "$TARGET/skills/playwright-interactive"
 opencode2 service restart
 ```
 
