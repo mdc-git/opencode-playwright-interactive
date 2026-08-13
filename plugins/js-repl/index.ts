@@ -134,7 +134,7 @@ export default Plugin.define({
     yield* context.tool.hook("execute.before", (event) => {
       if (event.tool !== "execute" || !event.input || typeof event.input !== "object") return Effect.void
       const input = event.input as { code?: unknown; timeout_ms?: unknown }
-      if (typeof input.code !== "string" || /tools\.js_repl\s*\(/.test(input.code)) return Effect.void
+      if (typeof input.code !== "string" || /tools(?:\.js_repl|\[["']js_repl["']\])\s*\(/.test(input.code)) return Effect.void
       const startsReplRouting = /\bimport\s*\(|\brequire\s*\(/.test(input.code)
       const continuesReplRouting = autoRoutedSessions.has(event.sessionID) && !/\btools(?:\.|\[)/.test(input.code)
       if (!startsReplRouting && !continuesReplRouting) return Effect.void
