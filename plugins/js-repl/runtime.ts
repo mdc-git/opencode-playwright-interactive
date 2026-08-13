@@ -101,7 +101,7 @@ const cwd = process.cwd();
 const tmpDir = process.env.JS_REPL_INTERNAL_TMP_DIR || cwd;
 const homeDir = process.env.HOME ?? null;
 const sessionId = process.env.JS_REPL_INTERNAL_SESSION_ID || null;
-const skillDir = process.env.JS_REPL_INTERNAL_SKILL_DIR || null;
+const scriptDir = process.env.JS_REPL_INTERNAL_SCRIPT_DIR || null;
 let browserBindingCounter = 0;
 const workspaceRequire = createRequire(path.join(cwd, "__opencode_js_repl__.cjs"));
 
@@ -276,7 +276,7 @@ function bindBrowser({ browser, context: browserContext, browserId, profileKind 
   });
 }
 
-context.opencode = Object.freeze({ cwd, homeDir, tmpDir, sessionId, skillDir, bindBrowser, emitImage, emitText });
+context.opencode = Object.freeze({ cwd, homeDir, tmpDir, sessionId, scriptDir, bindBrowser, emitImage, emitText });
 context.tmpDir = tmpDir;
 
 const builtinModuleSet = new Set([
@@ -1306,7 +1306,7 @@ class ReplController {
   private readonly sessionID: string
   private readonly directory: string
   private readonly options: RuntimeOptions
-  private readonly skillDirectory: string
+  private readonly scriptDirectory: string
   private child?: KernelProcess
   private reader?: ReadLineInterface
   private pending?: Pending
@@ -1317,11 +1317,11 @@ class ReplController {
   private disposed = false
   private request = 0
 
-  constructor(sessionID: string, directory: string, options: RuntimeOptions, skillDirectory: string) {
+  constructor(sessionID: string, directory: string, options: RuntimeOptions, scriptDirectory: string) {
     this.sessionID = sessionID
     this.directory = directory
     this.options = options
-    this.skillDirectory = skillDirectory
+    this.scriptDirectory = scriptDirectory
   }
 
   matchesDirectory(directory: string) {
@@ -1395,7 +1395,7 @@ class ReplController {
     ]
     const child = spawn(node, ["--no-warnings", "--experimental-vm-modules", kernelPath], {
       cwd: this.directory,
-      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(this.options), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(this.options), JS_REPL_INTERNAL_SESSION_ID: this.sessionID, JS_REPL_INTERNAL_TMP_DIR: this.scratch, JS_REPL_INTERNAL_MERIYAH_PATH: join(replCacheDirectory(this.options), "__opencode_js_repl__.cjs"), JS_REPL_INTERNAL_NODE_MODULE_DIRS: moduleDirs.join(delimiter), JS_REPL_INTERNAL_SKILL_DIR: this.skillDirectory },
+      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(this.options), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(this.options), JS_REPL_INTERNAL_SESSION_ID: this.sessionID, JS_REPL_INTERNAL_TMP_DIR: this.scratch, JS_REPL_INTERNAL_MERIYAH_PATH: join(replCacheDirectory(this.options), "__opencode_js_repl__.cjs"), JS_REPL_INTERNAL_NODE_MODULE_DIRS: moduleDirs.join(delimiter), JS_REPL_INTERNAL_SCRIPT_DIR: this.scriptDirectory },
       stdio: ["pipe", "pipe", "pipe", "pipe"],
     }) as KernelProcess
     await new Promise<void>((resolve, reject) => {
@@ -1627,11 +1627,11 @@ export class ReplRuntime {
   private readonly controllers = new Map<string, ReplController>()
   private disposed = false
   private readonly options: RuntimeOptions
-  private readonly skillDirectory: string
+  private readonly scriptDirectory: string
 
-  constructor(options: RuntimeOptions, skillDirectory: string) {
+  constructor(options: RuntimeOptions, scriptDirectory: string) {
     this.options = options
-    this.skillDirectory = skillDirectory
+    this.scriptDirectory = scriptDirectory
     void sweepStaleScratchDirs().catch(() => undefined)
   }
 
@@ -1644,7 +1644,7 @@ export class ReplRuntime {
       controller = undefined
     }
     if (!controller) {
-      controller = new ReplController(sessionID, directory, this.options, this.skillDirectory)
+      controller = new ReplController(sessionID, directory, this.options, this.scriptDirectory)
       this.controllers.set(sessionID, controller)
     }
     return controller.execute(code, timeoutMs)
