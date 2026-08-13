@@ -1,0 +1,15 @@
+{
+  "name": "opencode-playwright-interactive",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": "./plugins/js-repl/index.ts",
+  "dependencies": {
+    "@opencode-ai/plugin": "next",
+    "@opencode-ai/schema": "next",
+    "effect": "latest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mdc-git/opencode-playwright-interactive.git"
+  }
+}
