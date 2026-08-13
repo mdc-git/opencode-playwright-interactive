@@ -83,8 +83,8 @@ project, edit `<project>/.opencode/opencode.json(c)` or
       "options": {
         "nodePath": "node",
         "nodeModuleDirs": [],
-        "replCacheDir": "/home/user/.cache/opencode",
-        "playwrightCacheDir": "/home/user/.cache/opencode/playwright",
+        "replCacheDir": "{env:HOME}/.cache/opencode",
+        "playwrightCacheDir": "{env:HOME}/.cache/opencode/playwright",
         "npmPath": "npm",
         "playwrightNpmPath": "npm",
         "playwrightNpxPath": "npx"
