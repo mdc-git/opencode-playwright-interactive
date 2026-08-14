@@ -11,16 +11,17 @@ and Code Mode APIs. It is not a V1 plugin.
 
 ## Why use it
 
-Normal browser scripts start from a blank state on every run. This plugin keeps
-JavaScript bindings, loaded modules, browser pages, and Electron windows alive
-for the current OpenCode session. An agent can inspect an application, modify
-the code, and check the same live page again without reopening the browser or
-reconstructing the test state.
+Most browser tools limit an agent to a fixed collection of actions and outputs.
+This project places Playwright inside a persistent JavaScript runtime, giving
+OpenCode a general-purpose workspace for browser and Electron tasks. Pages,
+modules, variables, locators, and other JavaScript objects remain available
+across turns.
 
-The bundled Playwright skill gives OpenCode a consistent workflow for local web
+The agent can compose the exact inspection or interaction a task requires,
+reuse earlier results, and return focused output instead of a broad page
+snapshot. The bundled skill provides a consistent workflow for local web
 applications, Electron applications, responsive layouts, and remote websites.
-Playwright and Chromium use a shared user cache instead of being installed in
-every application under test.
+Playwright and Chromium are shared across projects through a common cache.
 
 ## Example workflows
 
@@ -39,9 +40,9 @@ produce this sequence:
 ### Debug a local application
 
 OpenCode can start or connect to a local application, inspect its rendered UI,
-change the source, and query the same browser page after the application
-updates. Persistent browser state is useful for problems that only appear after
-several navigation or form steps.
+and retain useful locators, helper functions, and results while the source
+changes. It can then query the same live page with focused Playwright code as
+the application updates.
 
 ### Inspect an Electron application
 
@@ -161,7 +162,7 @@ that installation.
 
 | Component | Purpose |
 | --- | --- |
-| Persistent JavaScript runtime | Keeps state, imports, and browser objects alive across turns. |
+| Persistent JavaScript runtime | Runs arbitrary JavaScript and keeps modules, values, and browser objects available across turns. |
 | Session cleanup | Stops and clears one session's persistent runtime. |
 | Shared browser installation | Installs the supported Playwright package and matching Chromium in a shared cache. |
 | Playwright skill | Selects the browser mode and guides inspection, interaction, screenshots, and cleanup. |
