@@ -158,39 +158,6 @@ The first browser request installs the supported Playwright package and matching
 Chromium under `~/.cache/opencode/playwright` by default. Later sessions reuse
 that installation.
 
-## Components
-
-| Component | Purpose |
-| --- | --- |
-| Persistent JavaScript runtime | Runs arbitrary JavaScript and keeps modules, values, and browser objects available across turns. |
-| Session cleanup | Stops and clears one session's persistent runtime. |
-| Shared browser installation | Installs the supported Playwright package and matching Chromium in a shared cache. |
-| Playwright skill | Selects the browser mode and guides inspection, interaction, screenshots, and cleanup. |
-| `/playwright` command | Shortcut that activates the skill and runs setup before the task. |
-
-## Browser modes
-
-| Target | Mode | Behavior |
-| --- | --- | --- |
-| Local web application | Standard Chromium | Uses normal Playwright behavior without the managed remote runtime. |
-| Electron application | Electron launcher | Opens the desktop application directly without a separate Chromium profile. |
-| Remote website | Managed Chromium | Uses a session profile, managed input, responsive layouts, and guarded identity settings. |
-
-Local targets include `file:` URLs, `localhost`, `*.localhost`, the
-`127.0.0.0/8` range, and `[::1]`. Responsive remote mode models a Chromium touch
-layout; it does not impersonate Safari or a physical mobile device.
-
-Managed remote sessions support visible controls in the main page, attached
-frames, and open shadow roots. They track popups and navigation, provide
-screenshots, and keep one coherent profile for the OpenCode session. Desktop
-and responsive touch layouts share that profile and run sequentially.
-
-The maintained Playwright package avoids the `Runtime.enable` CDP automation
-signal and includes a guarded child-frame navigation fix. Chromium keeps a
-version-coherent user agent. Identity-bearing overrides such as custom user
-agents, locale, timezone, screen, and browser arguments are blocked when they
-would create an inconsistent profile.
-
 ## Runtime behavior
 
 | Property | Behavior |
@@ -212,13 +179,6 @@ Interactive browser sessions remain open after a task so the visible result can
 be inspected and later turns can continue from the same state. Different
 OpenCode sessions do not share kernels, browser bindings, or temporary remote
 profiles.
-
-## Privacy and access boundaries
-
-Remote telemetry stays in memory and records action, failure, navigation, and
-popup counts plus the latest main-document status. It does not record tokens,
-input contents, page fingerprints, or a browsing history. Diagnostics may
-include frame URLs and links needed to identify a control.
 
 ## Security
 
