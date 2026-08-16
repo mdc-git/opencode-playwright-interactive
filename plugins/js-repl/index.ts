@@ -126,7 +126,7 @@ export default Plugin.define({
 
       tools.add({
         name: "js_repl_playwright_setup",
-        description: "Install rebrowser-playwright and its matching Chromium once in the shared OpenCode cache for use by js_repl across all workspaces.",
+        description: "Install patchright and its matching Chromium once in the shared OpenCode cache for use by js_repl across all workspaces.",
         input: setupInput,
         output: textOutput,
         options: { permission: "js_repl" },

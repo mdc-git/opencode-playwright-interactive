@@ -13,8 +13,8 @@ const MAX_TIMEOUT_MS = 300_000
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_PROTOCOL_LINE_BYTES = 32 * 1024 * 1024
 const MERIYAH_VERSION = "7.0.0"
-const PLAYWRIGHT_VERSION = "1.52.0"
-const PLAYWRIGHT_PACKAGE = "rebrowser-playwright"
+const PATCHRIGHT_VERSION = "1.61.1"
+const PATCHRIGHT_CORE_PACKAGE = "patchright-core"
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
 
 // The persistent Node kernel is kept inline so this tool is self-contained.
@@ -1189,62 +1189,32 @@ async function packageMatches(file: string, name: string, version: string) {
 
 // The .chromium-<version> marker alone cannot prove the browser download
 // survived (users clean caches, disks fill, installs crash). Resolve the
-// expected executable from playwright-core's own browser registry and check
-// that it is actually on disk.
+// expected executable from the patchright-core browser registry and check
+// that it is actually on disk. The registry bundles the Chrome for Testing
+// layout used by the patched driver (chrome-linux64 / chrome-mac-x64 /
+// chrome-win64, named "chromium" but actually Chrome for Testing).
 async function chromiumExecutableExists(directory: string, browserDirectory: string) {
   try {
-    const registry = JSON.parse(await readFile(join(directory, "node_modules", "playwright-core", "browsers.json"), "utf8")) as {
+    const registry = JSON.parse(await readFile(join(directory, "node_modules", PATCHRIGHT_CORE_PACKAGE, "browsers.json"), "utf8")) as {
       browsers?: Array<{ name?: string; revision?: string; browserRevision?: string }>
     }
     const chromium = registry.browsers?.find((browser) => browser?.name === "chromium")
     const revision = chromium?.browserRevision ?? chromium?.revision
     if (!revision) return false
-    const relative =
-      process.platform === "darwin"
-        ? join(`chromium-${revision}`, "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium")
-        : process.platform === "win32"
-          ? join(`chromium-${revision}`, "chrome-win", "chrome.exe")
-          : join(`chromium-${revision}`, "chrome-linux", "chrome")
-    return await exists(join(browserDirectory, relative))
+    return await exists(join(browserDirectory, chromiumExecutableRelative(revision)))
   } catch {
     return false
   }
 }
 
-// Guarded compatibility patch for rebrowser-playwright's upstream frame
-// lifecycle: on child-frame navigation, rebrowser's Frame emits
-// Runtime.executionContextsCleared on the whole CDP session, which makes
-// crPage destroy the execution contexts of *every* frame, including the main
-// frame's live handles. The patch scopes the clear to the affected frame
-// instead. It applies exact single-occurrence string replacements against the
-// installed playwright-core sources and fails loudly if the shape drifts (for
-// example after a version bump), rather than silently half-patching.
-async function ensureRebrowserFrameContextFix(directory: string) {
-  const framesFile = join(directory, "node_modules", "playwright-core", "lib", "server", "frames.js")
-  const chromiumPageFile = join(directory, "node_modules", "playwright-core", "lib", "server", "chromium", "crPage.js")
-  const originalClear = `    const crSession = (this._page._delegate._sessions.get(this._id) || this._page._delegate._mainFrameSession)._client;\n    crSession.emit("Runtime.executionContextsCleared");`
-  const fixedClear = `    const frameSession = this._page._delegate._sessions.get(this._id) || this._page._delegate._mainFrameSession;\n    frameSession._onFrameExecutionContextsCleared(this);`
-  const methodAnchor = `  _onExecutionContextsCleared() {\n    for (const contextId of Array.from(this._contextIdToContext.keys()))\n      this._onExecutionContextDestroyed(contextId);\n  }`
-  const fixedMethod = `${methodAnchor}\n  _onFrameExecutionContextsCleared(frame) {\n    for (const [contextId, context] of this._contextIdToContext) {\n      if (context.frame === frame)\n        this._onExecutionContextDestroyed(contextId);\n    }\n  }`
-  const methodMarker = "  _onFrameExecutionContextsCleared(frame) {"
-  const occurrences = (source: string, needle: string) => source.split(needle).length - 1
-  let frames = await readFile(framesFile, "utf8")
-  let chromiumPage = await readFile(chromiumPageFile, "utf8")
-  const clearReady = frames.includes(fixedClear)
-  const methodReady = chromiumPage.includes(methodMarker)
-  if (!clearReady) {
-    if (occurrences(frames, originalClear) !== 1) throw new Error(`Could not apply the rebrowser frame-context fix: ${framesFile} has an unexpected shape`)
-    frames = frames.replace(originalClear, fixedClear)
-    await writeFile(framesFile, frames)
+function chromiumExecutableRelative(revision: string) {
+  const folder = `chromium-${revision}`
+  if (process.platform === "darwin") {
+    const sub = process.arch === "arm64" ? "chrome-mac-arm64" : "chrome-mac-x64"
+    return join(folder, sub, "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing")
   }
-  if (!methodReady) {
-    if (occurrences(chromiumPage, methodAnchor) !== 1) throw new Error(`Could not apply the rebrowser frame-context fix: ${chromiumPageFile} has an unexpected shape`)
-    chromiumPage = chromiumPage.replace(methodAnchor, fixedMethod)
-    await writeFile(chromiumPageFile, chromiumPage)
-  }
-  if (!frames.includes(fixedClear) || !chromiumPage.includes(methodMarker)) {
-    throw new Error("The rebrowser frame-context fix could not be verified after installation")
-  }
+  if (process.platform === "win32") return join(folder, "chrome-win64", "chrome.exe")
+  return join(folder, process.arch === "arm64" ? "chrome-linux" : "chrome-linux64", "chrome")
 }
 
 async function run(command: string, args: string[], environment: NodeJS.ProcessEnv) {
@@ -1668,35 +1638,34 @@ export class ReplRuntime {
 
   async setupPlaywright(force = false) {
     const directory = playwrightCacheDirectory(this.options)
-    const marker = join(directory, `.chromium-${PLAYWRIGHT_VERSION}`)
-    const playwrightPackage = join(directory, "node_modules", "playwright", "package.json")
-    const playwrightCorePackage = join(directory, "node_modules", "playwright-core", "package.json")
+    const marker = join(directory, `.chromium-${PATCHRIGHT_VERSION}`)
+    const patchrightPackage = join(directory, "node_modules", "patchright", "package.json")
+    const patchrightCorePackage = join(directory, "node_modules", PATCHRIGHT_CORE_PACKAGE, "package.json")
     const browserDirectory = playwrightBrowserDirectory(this.options)
-    const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserDirectory, REBROWSER_PATCHES_RUNTIME_FIX_MODE: "addBinding" }
+    const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserDirectory }
     await mkdir(directory, { recursive: true })
-    // Everything that mutates the shared cache (package install, source
-    // patching, browser download, marker) runs under one inter-process lock.
+    // Everything that mutates the shared cache (package install, browser
+    // download, marker) runs under one inter-process lock.
     await withCacheLock(join(directory, ".playwright-setup"), async () => {
-      const packageReady = await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)
-        && await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION)
+      const packageReady = await packageMatches(patchrightPackage, "patchright", PATCHRIGHT_VERSION)
+        && await packageMatches(patchrightCorePackage, PATCHRIGHT_CORE_PACKAGE, PATCHRIGHT_VERSION)
       if (force || !packageReady) {
-        await run(optionString(this.options, "playwrightNpmPath", "npm"), ["install", "--prefix", directory, `playwright@npm:${PLAYWRIGHT_PACKAGE}@${PLAYWRIGHT_VERSION}`], environment)
+        await run(optionString(this.options, "playwrightNpmPath", "npm"), ["install", "--prefix", directory, `patchright@${PATCHRIGHT_VERSION}`], environment)
         await rm(marker, { force: true })
       }
-      if (!(await packageMatches(playwrightPackage, PLAYWRIGHT_PACKAGE, PLAYWRIGHT_VERSION)) || !(await packageMatches(playwrightCorePackage, "rebrowser-playwright-core", PLAYWRIGHT_VERSION))) {
-        throw new Error(`Playwright setup did not install ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION} and its matching core package`)
+      if (!(await packageMatches(patchrightPackage, "patchright", PATCHRIGHT_VERSION)) || !(await packageMatches(patchrightCorePackage, PATCHRIGHT_CORE_PACKAGE, PATCHRIGHT_VERSION))) {
+        throw new Error(`Playwright setup did not install patchright ${PATCHRIGHT_VERSION} and its matching core package`)
       }
-      await ensureRebrowserFrameContextFix(directory)
       const markerReady = !force && (await exists(marker)) && (await chromiumExecutableExists(directory, browserDirectory))
       if (!markerReady) {
-        await run(optionString(this.options, "playwrightNpxPath", "npx"), ["--prefix", directory, "playwright", "install", "chromium"], environment)
+        await run(optionString(this.options, "playwrightNpxPath", "npx"), ["--prefix", directory, "patchright", "install", "chromium"], environment)
         if (!(await chromiumExecutableExists(directory, browserDirectory))) {
           throw new Error(`Chromium executable is missing from ${browserDirectory} after installation`)
         }
         await writeFile(marker, "")
       }
     })
-    return `Shared ${PLAYWRIGHT_PACKAGE} ${PLAYWRIGHT_VERSION}, its frame-context navigation fix and Chromium are ready at ${directory}.`
+    return `Shared patchright ${PATCHRIGHT_VERSION} and its Chromium are ready at ${directory}.`
   }
 }
 

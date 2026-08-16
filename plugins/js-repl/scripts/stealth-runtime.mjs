@@ -349,6 +349,16 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       livePages.clear();
     };
     addListener(persistentContext, "close", onContextClose);
+    const resolveEntryFrame = async (currentPage, entry) => {
+      try {
+        const handle = await entry.locator.elementHandle({ timeout: 0 });
+        if (handle) {
+          const frame = handle.ownerFrame();
+          if (frame) return frame;
+        }
+      } catch { /* fall through to the main frame as a best-effort attribution */ }
+      return currentPage.mainFrame();
+    };
     const resolveVisible = async (currentPage, locatorForFrame, { timeout = 5000 } = {}) => {
       requirePage(currentPage);
       if (typeof locatorForFrame !== "function") throw new TypeError("resolveVisible requires a locator factory");
@@ -385,8 +395,8 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
           const queries = semanticQueries.filter(({ options }) => Object.keys(options).every((key) => supportedOptions.has(key)));
           if (queries.length) {
             const inventory = await interactiveElements(currentPage);
-            const semanticMatches = inventory.filter((entry) => queries.some(({ frame, role, options }) => {
-              if (entry.frame !== frame || entry.role !== role) return false;
+            const semanticMatches = inventory.filter((entry) => queries.some(({ role, options }) => {
+              if (entry.role !== role) return false;
               if (options.disabled !== undefined && entry.disabled !== options.disabled) return false;
               if (options.checked !== undefined && entry.checked !== options.checked) return false;
               if (options.selected !== undefined && entry.selected !== options.selected) return false;
@@ -398,7 +408,10 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
               const expected = String(options.name);
               return options.exact ? entry.name === expected : (entry.name || "").toLocaleLowerCase().includes(expected.toLocaleLowerCase());
             }));
-            if (semanticMatches.length === 1) return Object.freeze({ frame: semanticMatches[0].frame, locator: semanticMatches[0].locator, semanticFallback: true });
+            if (semanticMatches.length === 1) {
+              const frame = await resolveEntryFrame(currentPage, semanticMatches[0]);
+              return Object.freeze({ frame, locator: semanticMatches[0].locator, semanticFallback: true });
+            }
             if (semanticMatches.length > 1) throw new Error(`Target is ambiguous across ${semanticMatches.length} normalized semantic matches`);
           }
         }
@@ -406,103 +419,118 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       } while (Date.now() < deadline);
       throw new Error(`Visible target did not appear in any frame within ${Math.max(0, Number(timeout) || 0)}ms. Frames: ${currentPage.frames().map((frame) => frame.url()).join(", ")}`);
     };
-    const interactiveElements = async (currentPage, { includeHidden = false, limit = Infinity } = {}) => {
+    const INTERACTIVE_ROLES = new Set([
+      "button", "link", "checkbox", "radio", "switch", "textbox", "searchbox",
+      "combobox", "listbox", "option", "menuitem", "menuitemcheckbox", "menuitemradio",
+      "tab", "treeitem", "slider", "spinbutton", "scrollbar",
+    ]);
+    // The browser-computed accessibility snapshot (mode "ai") carries measured roles,
+    // real accessible names, ARIA states, and stable per-frame refs (aria-ref=eN in the
+    // main frame, aria-ref=f<frameSeq>eN elsewhere). Refs resolve into live locators that
+    // jump to the right realm, including frames that attach after the snapshot. Plain
+    // landmarks and containers only stay in the inventory when the browser also reports
+    // a pointer cursor for them, so structurally-role'd native controls stay actionable.
+    const parseAriaSnapshotYaml = (yaml) => {
+      const nodes = [];
+      const stack = [];
+      const unquote = (value) => {
+        if (!value.startsWith('"') || !value.endsWith('"')) return value;
+        let out = "";
+        for (let i = 1; i < value.length - 1; i++) {
+          const char = value[i];
+          if (char !== "\\") { out += char; continue; }
+          const next = value[++i];
+          if (next === "\\" || next === '"') out += next;
+          else if (next === "b") out += "\b";
+          else if (next === "f") out += "\f";
+          else if (next === "n") out += "\n";
+          else if (next === "r") out += "\r";
+          else if (next === "t") out += "\t";
+          else if (next === "x") out += String.fromCharCode(parseInt(value.slice(i + 1, i + 3), 16)), i += 2;
+          else throw new TypeError("Unexpected escape in aria snapshot value: \\" + next);
+        }
+        return out;
+      };
+      for (const rawLine of yaml.split(/\r?\n/)) {
+        const trimmed = rawLine.trim();
+        if (!trimmed || !trimmed.startsWith("- ")) continue;
+        const depth = (rawLine.length - rawLine.trimStart().length) / 2;
+        const body = trimmed.slice(2);
+        if (body.startsWith("/") || body.startsWith("text:")) {
+          const parent = stack[stack.length - 1];
+          if (!parent) continue;
+          const separator = body.indexOf(":");
+          if (separator > 0) {
+            const kind = body.slice(0, separator);
+            const value = unquote(body.slice(separator + 1).trim());
+            if (kind === "/url") parent.url = value;
+            else if (kind === "/placeholder") parent.placeholder = value;
+            else parent.text = (parent.text ? parent.text + " " : "") + value;
+          }
+          continue;
+        }
+        while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
+        const keyMatch = body.match(/(\S+)(?:\s+("(?:[^"\\]|\\.)*"))?((?:\s+\[[^\]]*\])*)(?::([\s\S]*))?$/);
+        if (!keyMatch) throw new TypeError("Unrecognized aria snapshot line: " + rawLine);
+        const node = { depth, role: keyMatch[1], name: keyMatch[2] ? JSON.parse(keyMatch[2]) : "" };
+        const attrs = keyMatch[3] || "";
+        for (const attr of attrs.matchAll(/\[([\w-]+)(?:=([^\]]*))?\]/g)) {
+          const name = attr[1];
+          const value = attr[2];
+          if (name === "ref") node.ref = value;
+          else if (value === undefined) node[name] = true;
+          else if (name === "level") node.level = Number(value);
+          else if (value === "mixed") node[name] = "mixed";
+          else if (value === "true") node[name] = true;
+          else if (value === "false") node[name] = false;
+          else node[name] = value;
+        }
+        if (keyMatch[4] !== undefined) node.text = unquote(keyMatch[4].trim());
+        stack.push(node);
+        nodes.push(node);
+      }
+      return nodes;
+    };
+    const interactiveElements = async (currentPage, { limit = Infinity } = {}) => {
       const state = requirePage(currentPage);
       const readinessDelay = state.inventoryReadyAt - Date.now();
       if (readinessDelay > 0) await sleep(readinessDelay);
-      const selector = "button, a[href], input:not([type=hidden]), select, textarea, summary, [contenteditable=true], [role=button], [role=link], [role=checkbox], [role=radio], [role=switch], [role=textbox], [role=searchbox], [role=combobox], [role=listbox], [role=option], [role=menuitem], [role=menuitemcheckbox], [role=menuitemradio], [role=tab], [role=treeitem], [role=slider], [role=spinbutton], [role=scrollbar]";
-      const frames = currentPage.frames().filter((frame) => frame === currentPage.mainFrame() || !["", "about:blank"].includes(frame.url()));
-      const groups = await Promise.all(frames.map(async (frame, frameIndex) => {
-        const candidates = frame.locator(selector);
-        const details = await candidates.evaluateAll((elements, options) => {
-          const resolveId = (el, id) => {
-            if (!id) return null;
-            const root = el.getRootNode();
-            if (root.getElementById) { const f = root.getElementById(id); if (f) return f; }
-            return el.ownerDocument.getElementById(id);
-          };
-          const flat = (s) => s ? s.replace(/\s+/g, " ").trim() : "";
-          const collectText = (node) => {
-            if (node.nodeType === 3) return node.textContent || "";
-            if (node.nodeType !== 1) return "";
-            let text = "";
-            for (let child = node.firstChild; child; child = child.nextSibling) {
-              if (child.nodeType === 1 && (child.getAttribute("aria-hidden") === "true" || child.hidden)) continue;
-              text += collectText(child);
-            }
-            return text;
-          };
-          const computeName = (el, viaLabelledBy = false, visiting = new Set()) => {
-            if (!el || visiting.has(el)) return "";
-            visiting.add(el);
-            if (!viaLabelledBy) {
-              const labelledBy = el.getAttribute("aria-labelledby");
-              if (labelledBy && labelledBy.trim()) {
-                const parts = labelledBy.trim().split(/\s+/).map((id) => {
-                  const target = resolveId(el, id);
-                  return target ? computeName(target, true, visiting) : "";
-                }).filter(Boolean);
-                if (parts.length) return flat(parts.join(" "));
-              }
-            }
-            const ariaLabel = el.getAttribute("aria-label");
-            if (ariaLabel && ariaLabel.trim()) return flat(ariaLabel);
-            if (el.getAttribute("aria-labelledby") === null && el.labels && el.labels.length) {
-              const labelParts = [...el.labels].map((label) => collectText(label)).filter(Boolean);
-              if (labelParts.length) return flat(labelParts.join(" "));
-            }
-            const alt = el.getAttribute("alt");
-            if (alt && alt.trim()) return flat(alt);
-            const text = collectText(el);
-            if (text && text.trim()) return flat(text);
-            const placeholder = el.getAttribute("placeholder");
-            if (placeholder && placeholder.trim()) return flat(placeholder);
-            const title = el.getAttribute("title");
-            if (title && title.trim()) return flat(title);
-            return "";
-          };
-          return elements.map((element, index) => {
-          const rect = element.getBoundingClientRect();
-          let visible = rect.width > 0 && rect.height > 0 && !element.hidden;
-          if (visible && typeof element.checkVisibility === "function") visible = element.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
-          if (!options.includeHidden && !visible) return undefined;
-          const tag = element.tagName.toLowerCase();
-          const type = element.getAttribute("type")?.toLowerCase();
-          const name = computeName(element);
-          let nativeRole = "";
-          if (tag === "button" || tag === "summary" || ["button", "submit", "reset", "image"].includes(type)) nativeRole = "button";
-          else if (tag === "a" && element.hasAttribute("href")) nativeRole = "link";
-          else if (tag === "input" && type === "checkbox") nativeRole = "checkbox";
-          else if (tag === "input" && type === "radio") nativeRole = "radio";
-          else if (tag === "input" && type === "range") nativeRole = "slider";
-          else if (tag === "input" && type === "number") nativeRole = "spinbutton";
-          else if (tag === "input" && type === "search") nativeRole = "searchbox";
-          else if (tag === "select") nativeRole = element.multiple || element.size > 1 ? "listbox" : "combobox";
-          else if (tag === "textarea" || tag === "input" || element.isContentEditable) nativeRole = "textbox";
-          const explicitRole = element.getAttribute("role")?.trim() || "";
-          const role = nativeRole && options.structuralRoles.includes(explicitRole) ? nativeRole : explicitRole || nativeRole;
-          // Normalize ARIA states to booleans (or "mixed") so they compare
-          // strictly against getByRole's boolean checked/selected filters. A
-          // missing attribute on a stateful role counts as false, matching
-          // the browser's effective state.
-          const ariaState = (attribute) => {
-            const raw = element.getAttribute(attribute);
-            return raw === "true" ? true : raw === "false" ? false : raw === "mixed" ? "mixed" : undefined;
-          };
-          const checked = "checked" in element
-            ? Boolean(element.checked)
-            : ariaState("aria-checked") ?? (options.checkedRoles.includes(role) ? false : undefined);
-          const selected = "selected" in element
-            ? Boolean(element.selected)
-            : ariaState("aria-selected") ?? (options.selectedRoles.includes(role) ? false : undefined);
-          return { index, visible, tag, type: type || "", role, name: name.slice(0, 240), disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"), checked, selected, href: element.href || "" };
-          }).filter(Boolean); }, { includeHidden, structuralRoles: STRUCTURAL_ROLES, checkedRoles: ["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"], selectedRoles: ["option", "tab", "treeitem"] }).catch(() => []);
-        return { frame, frameIndex, candidates, details, index: 0 };
-      }));
+      const yaml = await currentPage.ariaSnapshot({ mode: "ai" }).catch(() => "");
+      const parsedNodes = [];
+      try { parsedNodes.push(...parseAriaSnapshotYaml(yaml)); } catch { /* an unparseable snapshot degrades to an empty inventory */ }
       const entries = [];
-      while (groups.some((group) => group.index < group.details.length)) for (const group of groups) if (group.index < group.details.length) { const details = group.details[group.index++]; entries.push(Object.freeze({ frame: group.frame, frameIndex: group.frameIndex, locator: group.candidates.nth(details.index), frameUrl: group.frame.url(), ...details })); }
-      // Untruncated by default; callers can bound size on very large pages.
-      return Object.freeze(Number.isFinite(limit) ? entries.slice(0, Math.max(0, Math.floor(limit))) : entries);
+      let index = 0;
+      const bound = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : Infinity;
+      for (const parsed of parsedNodes) {
+        if (!INTERACTIVE_ROLES.has(parsed.role) && parsed.cursor !== "pointer") continue;
+        if (index >= bound) break;
+        let locator;
+        if (parsed.ref) locator = currentPage.locator("aria-ref=" + parsed.ref);
+        else if (parsed.name) {
+          const options = { name: parsed.name, exact: true };
+          if (parsed.checked !== undefined) options.checked = parsed.checked;
+          if (parsed.selected !== undefined) options.selected = parsed.selected;
+          if (parsed.disabled !== undefined) options.disabled = parsed.disabled;
+          locator = currentPage.getByRole(parsed.role, options).first();
+        }
+        if (!locator) continue;
+        entries.push(Object.freeze({
+          index: index++,
+          role: parsed.role,
+          name: parsed.name || parsed.text || parsed.placeholder || "",
+          disabled: parsed.disabled,
+          checked: parsed.checked,
+          selected: parsed.selected,
+          expanded: parsed.expanded,
+          pressed: parsed.pressed,
+          invalid: parsed.invalid,
+          level: parsed.level,
+          url: parsed.url || "",
+          placeholder: parsed.placeholder || "",
+          locator,
+        }));
+      }
+      return Object.freeze(entries);
     };
     const moveToTarget = async (currentPage, state, target) => { const box = await targetBox(currentPage, target, browserBinding); await moveToPoint(currentPage, state, pointFor(box, profile)); };
     // Momentum scrolling: one flick launches with an impulse that decays,
@@ -550,7 +578,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       pageState: (currentPage) => { const state = requirePage(currentPage); return Object.freeze({ registered: true, binding, pageId: state.pageId, busy: state.busy, action: state.action, stopped: state.stopped, lastDocumentStatus: state.lastDocumentStatus }); },
       managed: (currentPage) => { requirePage(currentPage); return true; },
       telemetry: () => Object.freeze({ ...telemetry }),
-      capabilities: () => Object.freeze({ state: status, binding, profileKind, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, ambientInput: false, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "unmanaged", serviceWorkers: "unmanaged", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: identity.deviceScaleFactor, userAgent: undefined, identity, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, runtimeCdpPatch: "rebrowser-playwright (installed as the shared Playwright driver; verify with stealth-audit)", automationControlledFlag: false, standardPlaywrightProtocol: true, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
+      capabilities: () => Object.freeze({ state: status, binding, profileKind, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, ambientInput: false, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "unmanaged", serviceWorkers: "unmanaged", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: identity.deviceScaleFactor, userAgent: undefined, identity, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, runtimeCdpPatch: "patchright (installed as the shared Playwright driver; verify with stealth-audit)", automationControlledFlag: false, standardPlaywrightProtocol: true, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
       resolveVisible,
       interactiveElements,
       moveTo: (currentPage, target) => queueAction(currentPage, "moveTo", (state) => moveToTarget(currentPage, state, target)),
