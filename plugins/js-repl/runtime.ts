@@ -13,8 +13,10 @@ const MAX_TIMEOUT_MS = 300_000
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_PROTOCOL_LINE_BYTES = 32 * 1024 * 1024
 const MERIYAH_VERSION = "7.0.0"
-const PATCHRIGHT_VERSION = "1.61.1"
-const PATCHRIGHT_CORE_PACKAGE = "patchright-core"
+const PLAYWRIGHT_VERSION = "1.60.0"
+const CAMOUFOX_VERSION = "0.12.0"
+const CAMOUFOX_PACKAGE = "camoufox-js"
+const CAMOUFOX_INSTALL_DIR_NAME = "camoufox"
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
 
 // The persistent Node kernel is kept inline so this tool is self-contained.
@@ -1189,13 +1191,13 @@ async function packageMatches(file: string, name: string, version: string) {
 
 // The .chromium-<version> marker alone cannot prove the browser download
 // survived (users clean caches, disks fill, installs crash). Resolve the
-// expected executable from the patchright-core browser registry and check
-// that it is actually on disk. The registry bundles the Chrome for Testing
-// layout used by the patched driver (chrome-linux64 / chrome-mac-x64 /
-// chrome-win64, named "chromium" but actually Chrome for Testing).
+// expected executable from the playwright-core browser registry and check
+// that it is actually on disk. Playwright 1.60 ships Chrome for Testing
+// builds under the Chromium name (chrome-linux64 / chrome-mac-x64 /
+// chrome-win64).
 async function chromiumExecutableExists(directory: string, browserDirectory: string) {
   try {
-    const registry = JSON.parse(await readFile(join(directory, "node_modules", PATCHRIGHT_CORE_PACKAGE, "browsers.json"), "utf8")) as {
+    const registry = JSON.parse(await readFile(join(directory, "node_modules", "playwright-core", "browsers.json"), "utf8")) as {
       browsers?: Array<{ name?: string; revision?: string; browserRevision?: string }>
     }
     const chromium = registry.browsers?.find((browser) => browser?.name === "chromium")
@@ -1215,6 +1217,13 @@ function chromiumExecutableRelative(revision: string) {
   }
   if (process.platform === "win32") return join(folder, "chrome-win64", "chrome.exe")
   return join(folder, process.arch === "arm64" ? "chrome-linux" : "chrome-linux64", "chrome")
+}
+
+// Camoufox resolves its installation from CAMOUFOX_INSTALL_DIR at launch
+// time; the version.json it writes after a successful fetch is the
+// authoritative readiness signal (the same check launchOptions performs).
+async function camoufoxReady(camoufoxDirectory: string) {
+  return await exists(join(camoufoxDirectory, "version.json"))
 }
 
 async function run(command: string, args: string[], environment: NodeJS.ProcessEnv) {
@@ -1365,7 +1374,7 @@ class ReplController {
     ]
     const child = spawn(node, ["--no-warnings", "--experimental-vm-modules", kernelPath], {
       cwd: this.directory,
-      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(this.options), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(this.options), JS_REPL_INTERNAL_SESSION_ID: this.sessionID, JS_REPL_INTERNAL_TMP_DIR: this.scratch, JS_REPL_INTERNAL_MERIYAH_PATH: join(replCacheDirectory(this.options), "__opencode_js_repl__.cjs"), JS_REPL_INTERNAL_NODE_MODULE_DIRS: moduleDirs.join(delimiter), JS_REPL_INTERNAL_SCRIPT_DIR: this.scriptDirectory },
+      env: { ...process.env, NODE_PATH: [join(replCacheDirectory(this.options), "node_modules"), process.env.NODE_PATH].filter(Boolean).join(delimiter), PLAYWRIGHT_BROWSERS_PATH: playwrightBrowserDirectory(this.options), CAMOUFOX_INSTALL_DIR: join(playwrightCacheDirectory(this.options), CAMOUFOX_INSTALL_DIR_NAME), JS_REPL_INTERNAL_SESSION_ID: this.sessionID, JS_REPL_INTERNAL_TMP_DIR: this.scratch, JS_REPL_INTERNAL_MERIYAH_PATH: join(replCacheDirectory(this.options), "__opencode_js_repl__.cjs"), JS_REPL_INTERNAL_NODE_MODULE_DIRS: moduleDirs.join(delimiter), JS_REPL_INTERNAL_SCRIPT_DIR: this.scriptDirectory },
       stdio: ["pipe", "pipe", "pipe", "pipe"],
     }) as KernelProcess
     await new Promise<void>((resolve, reject) => {
@@ -1638,34 +1647,47 @@ export class ReplRuntime {
 
   async setupPlaywright(force = false) {
     const directory = playwrightCacheDirectory(this.options)
-    const marker = join(directory, `.chromium-${PATCHRIGHT_VERSION}`)
-    const patchrightPackage = join(directory, "node_modules", "patchright", "package.json")
-    const patchrightCorePackage = join(directory, "node_modules", PATCHRIGHT_CORE_PACKAGE, "package.json")
     const browserDirectory = playwrightBrowserDirectory(this.options)
-    const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserDirectory }
+    const camoufoxDirectory = join(directory, CAMOUFOX_INSTALL_DIR_NAME)
+    const chromiumMarker = join(directory, `.chromium-${PLAYWRIGHT_VERSION}`)
+    const camoufoxMarker = join(directory, `.camoufox-${CAMOUFOX_VERSION}`)
+    const playwrightPackage = join(directory, "node_modules", "playwright", "package.json")
+    const playwrightCorePackage = join(directory, "node_modules", "playwright-core", "package.json")
+    const camoufoxPackage = join(directory, "node_modules", CAMOUFOX_PACKAGE, "package.json")
+    const environment = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserDirectory, CAMOUFOX_INSTALL_DIR: camoufoxDirectory }
     await mkdir(directory, { recursive: true })
     // Everything that mutates the shared cache (package install, browser
-    // download, marker) runs under one inter-process lock.
+    // download, markers) runs under one inter-process lock.
     await withCacheLock(join(directory, ".playwright-setup"), async () => {
-      const packageReady = await packageMatches(patchrightPackage, "patchright", PATCHRIGHT_VERSION)
-        && await packageMatches(patchrightCorePackage, PATCHRIGHT_CORE_PACKAGE, PATCHRIGHT_VERSION)
+      const packageReady = await packageMatches(playwrightPackage, "playwright", PLAYWRIGHT_VERSION)
+        && await packageMatches(playwrightCorePackage, "playwright-core", PLAYWRIGHT_VERSION)
+        && await packageMatches(camoufoxPackage, CAMOUFOX_PACKAGE, CAMOUFOX_VERSION)
       if (force || !packageReady) {
-        await run(optionString(this.options, "playwrightNpmPath", "npm"), ["install", "--prefix", directory, `patchright@${PATCHRIGHT_VERSION}`], environment)
-        await rm(marker, { force: true })
+        await run(optionString(this.options, "playwrightNpmPath", "npm"), ["install", "--prefix", directory, `playwright@${PLAYWRIGHT_VERSION}`, `${CAMOUFOX_PACKAGE}@${CAMOUFOX_VERSION}`], environment)
+        await rm(chromiumMarker, { force: true })
+        await rm(camoufoxMarker, { force: true })
       }
-      if (!(await packageMatches(patchrightPackage, "patchright", PATCHRIGHT_VERSION)) || !(await packageMatches(patchrightCorePackage, PATCHRIGHT_CORE_PACKAGE, PATCHRIGHT_VERSION))) {
-        throw new Error(`Playwright setup did not install patchright ${PATCHRIGHT_VERSION} and its matching core package`)
+      if (!(await packageMatches(playwrightPackage, "playwright", PLAYWRIGHT_VERSION)) || !(await packageMatches(playwrightCorePackage, "playwright-core", PLAYWRIGHT_VERSION)) || !(await packageMatches(camoufoxPackage, CAMOUFOX_PACKAGE, CAMOUFOX_VERSION))) {
+        throw new Error(`Playwright setup did not install playwright ${PLAYWRIGHT_VERSION} and ${CAMOUFOX_PACKAGE} ${CAMOUFOX_VERSION}`)
       }
-      const markerReady = !force && (await exists(marker)) && (await chromiumExecutableExists(directory, browserDirectory))
-      if (!markerReady) {
-        await run(optionString(this.options, "playwrightNpxPath", "npx"), ["--prefix", directory, "patchright", "install", "chromium"], environment)
+      const chromiumMarkerReady = !force && (await exists(chromiumMarker)) && (await chromiumExecutableExists(directory, browserDirectory))
+      if (!chromiumMarkerReady) {
+        await run(optionString(this.options, "playwrightNpxPath", "npx"), ["--prefix", directory, "playwright", "install", "chromium"], environment)
         if (!(await chromiumExecutableExists(directory, browserDirectory))) {
           throw new Error(`Chromium executable is missing from ${browserDirectory} after installation`)
         }
-        await writeFile(marker, "")
+        await writeFile(chromiumMarker, "")
+      }
+      const camoufoxMarkerReady = !force && (await exists(camoufoxMarker)) && (await camoufoxReady(camoufoxDirectory))
+      if (!camoufoxMarkerReady) {
+        await run(optionString(this.options, "playwrightNpxPath", "npx"), ["--prefix", directory, CAMOUFOX_PACKAGE, "fetch"], environment)
+        if (!(await camoufoxReady(camoufoxDirectory))) {
+          throw new Error(`Camoufox is missing from ${camoufoxDirectory} after installation`)
+        }
+        await writeFile(camoufoxMarker, "")
       }
     })
-    return `Shared patchright ${PATCHRIGHT_VERSION} and its Chromium are ready at ${directory}.`
+    return `Shared Playwright ${PLAYWRIGHT_VERSION}, Camoufox ${CAMOUFOX_VERSION} and their browsers are ready at ${directory}.`
   }
 }
 

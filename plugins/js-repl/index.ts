@@ -70,7 +70,7 @@ export default Plugin.define({
       skills.add({
         id: "playwright-interactive" as Skill.ID,
         name: "playwright-interactive" as Skill.Name,
-        description: "Persistent Playwright browser and Electron QA through js_repl, with standard Playwright for local apps and managed stealth for remote websites. Use when opening, debugging, testing, or visually inspecting local web apps, responsive interfaces, remote websites, or Electron applications.",
+        description: "Persistent Playwright browser and Electron QA through js_repl, with standard Playwright Chromium for local apps and managed Camoufox for remote websites. Use when opening, debugging, testing, or visually inspecting local web apps, responsive interfaces, remote websites, or Electron applications.",
         location: pluginDir as Skill.Info["location"],
         content: skillBody,
       })
@@ -126,7 +126,7 @@ export default Plugin.define({
 
       tools.add({
         name: "js_repl_playwright_setup",
-        description: "Install patchright and its matching Chromium once in the shared OpenCode cache for use by js_repl across all workspaces.",
+        description: "Install Playwright and Camoufox with their matching browsers once in the shared OpenCode cache for use by js_repl across all workspaces.",
         input: setupInput,
         output: textOutput,
         options: { permission: "js_repl" },
