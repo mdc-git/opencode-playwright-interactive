@@ -26,7 +26,7 @@ For every browser or Electron request, the agent **MUST** run setup as above, th
 
 - **Electron:** use Electron startup only. Do not launch Chromium or load the stealth runtime.
 - **Local web app:** use standard Chromium startup. A request to start, open, inspect, or test "the dev server" in the current workspace is local even before its port is known. A target is also local when the user identifies it as running on the local machine, or its URL uses `file:`, `localhost`, `*.localhost`, `127.0.0.0/8`, or `[::1]`. Do not load or use the stealth runtime.
-- **Remote website:** use managed stealth Chromium startup.
+- **Remote website:** use managed Camoufox stealth startup.
 
 If the target mode cannot be determined from the request, ask for the target URL or application type before startup. Do not start stealth and later switch a local target to standard mode.
 
@@ -36,8 +36,8 @@ Send this complete block as the first `execute` call after setup:
 
 ```js
 return await tools.js_repl({
-  code: `var patchright = await import("patchright");
-var electronLauncher = patchright._electron;
+  code: `var playwright = await import("playwright");
+var electronLauncher = playwright._electron;
 var ELECTRON_ENTRY = ".";
 var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] });
 var appWindow = await electronApp.firstWindow();
@@ -55,8 +55,8 @@ Send this complete block as the first `execute` call after setup:
 
 ```js
 return await tools.js_repl({
-  code: `var patchright = await import("patchright");
-var chromium = patchright.chromium;
+  code: `var playwright = await import("playwright");
+var chromium = playwright.chromium;
 var HEADLESS = false;
 var browser = await chromium.launch({ headless: HEADLESS });
 var context = await browser.newContext();
@@ -73,14 +73,18 @@ Set `HEADLESS = true` only when the environment has no graphical display. Local 
 
 ### Managed Remote Web Startup
 
-There are no alternative remote Chromium initialization steps. The agent **MUST NOT** read, grep, extract, copy, reconstruct, evaluate, or inspect `SKILL.md`, `scripts/stealth-runtime.mjs`, or saved tool output before startup. The agent **MUST NOT** use `eval`, `new Function`, `vm`, a subagent, a wrapper, a factory, or a replacement launcher. The agent **MUST NOT** call `chromium.launch()`, call `chromium.launchPersistentContext()` directly, create a non-managed context, or define another `ensureWebBrowser` for a remote target.
+There are no alternative remote browser initialization steps. The agent **MUST NOT** read, grep, extract, copy, reconstruct, evaluate, or inspect `SKILL.md`, `scripts/stealth-runtime.mjs`, or saved tool output before startup. The agent **MUST NOT** use `eval`, `new Function`, `vm`, or a subagent. The agent **MUST NOT** call `chromium.launch()` or `chromium.launchPersistentContext()` directly, create a non-managed context, or define another `ensureWebBrowser` for a remote target.
 
 Send this complete block as the first `execute` call after setup:
 
 ```js
 return await tools.js_repl({
-  code: `var patchright = await import("patchright");
-var chromium = patchright.chromium;
+  code: `var core = await import("playwright-core");
+var { launchOptions } = await import("camoufox-js");
+var chromium = {
+  launchPersistentContext: async (userDataDir, overrideOptions) =>
+    core.firefox.launchPersistentContext(userDataDir, { ...(await launchOptions({})), ...overrideOptions }),
+};
 var path = await import("node:path");
 var fs = await import("node:fs/promises");
 var { pathToFileURL } = await import("node:url");
@@ -90,6 +94,7 @@ await fs.access(stealthRuntimePath);
 var { installStealthRuntime } = await import(pathToFileURL(stealthRuntimePath).href);
 var stealthRuntime = await installStealthRuntime({
   chromium,
+  browserEngine: "camoufox",
   opencode,
   headless: HEADLESS,
 });
@@ -133,21 +138,21 @@ For managed remote startup, set `HEADLESS = true` only when the environment has 
 - Do not use any `stealth`, `mobileStealth`, `ensureWebBrowser`, or `ensureMobileBrowser` APIs.
 - Before every local-mode `tools.js_repl` call, inspect its `code` payload. If it contains a stealth-runtime identifier such as `stealth`, `mobileStealth`, `interactiveElements`, or `resolveVisible`, do not execute it; replace it with the ordinary Playwright equivalent.
 - For mobile-sized local QA, create a normal context with the required viewport and touch options rather than using the stealth mobile controller.
-- Never use a personal Chrome profile.
+- Never use a personal browser profile.
 
 ## Managed Remote Web Rules
 
 The managed-controller sections from **Scrolling** through **Mobile** apply only to remote web mode. Standard local web and Electron mode must ignore all instructions in those sections that require `stealth`, controller-produced locators, managed input, or stealth screenshots.
 
-- Every Chromium page **MUST** belong to the controller returned by `ensureWebBrowser()` or `ensureMobileBrowser()`.
+- Every managed page **MUST** belong to the controller returned by `ensureWebBrowser()` or `ensureMobileBrowser()`.
 - Use `stealth.newPage()` rather than `browser.newPage()`.
 - Use controller methods with an explicit `Page` for behavior-sensitive input.
 - Direct locator, mouse, keyboard, touchscreen, and DOM mutation calls are ordinary unmanaged Playwright and do not receive behavioral shaping.
-- Each OpenCode session gets its own Chrome profile under its unique `opencode.tmpDir`, so multiple OpenCode sessions can run browsers simultaneously without conflict. Desktop and mobile within one session share that session's profile and must run sequentially.
+- Each OpenCode session gets its own browser profile under its unique `opencode.tmpDir`, so multiple OpenCode sessions can run browsers simultaneously without conflict. Desktop and mobile within one session share that session's profile and must run sequentially.
 - `stealth.binding` and `stealth.pageState(page)` identify the OpenCode session, managed browser and managed page. Before resuming after any browser lifecycle change, the agent **MUST** verify that the active controller and page report the same binding. A controller rejects pages, locators and profile metadata from another session.
-- Never use a personal Chrome profile.
+- Never use a personal browser profile.
 
-The runtime keeps the native Chromium user agent. Setup installs the current patchright package, a maintained fork of the Playwright driver with its stealth patches baked into the distributed driver: it avoids the `Runtime.enable` CDP leak by executing scripts in isolated execution contexts and tweaks the driver defaults and launch behavior. Chromium always launches with `--disable-blink-features=AutomationControlled`. The runtime rejects caller-supplied identity-critical launch options, context options, HTTP headers, and Chromium arguments rather than combining contradictory browser, locale, viewport, device, or automation claims. Mobile mode is responsive touch emulation in Chromium, not Safari or physical-device impersonation. Managed input is task-bound: the runtime emits no ambient pointer movement while idle.
+The runtime keeps the browser's native user agent and identity. Setup installs Playwright 1.60 for standard local Chromium and Electron QA, plus Camoufox — a Firefox fork with anti-detection built into the browser itself: fingerprints are injected at the C++/Juggler level, page-agent JavaScript runs sandboxed outside the page's scope, and `navigator.webdriver` is hidden natively. The managed remote runtime drives Camoufox through `playwright-core`'s `firefox`; Chromium stealth flags are never applied to it. The runtime rejects caller-supplied identity-critical launch options, context options, HTTP headers, and browser arguments rather than combining contradictory browser, locale, viewport, device, or automation claims. Mobile mode is responsive touch emulation, not Safari or physical-device impersonation. Managed input is task-bound: the runtime emits no ambient pointer movement while idle.
 
 ### Diagnostics And Sensitive Artifacts
 
@@ -211,9 +216,9 @@ Passing a locator without a delta, `await stealth.scroll(page, targetLocator)`, 
 
 ## Closed Browser Isolation
 
-If a user closes the Chromium window or browser process, the managed context and every former `page` handle are gone. The controller enters `externally-closed` state and reports the session and browser binding that was closed. This is **not** a navigation, selector, popup, screenshot, or stale-page diagnostic.
+If a user closes the browser window or process, the managed context and every former `page` handle are gone. The controller enters `externally-closed` state and reports the session and browser binding that was closed. This is **not** a navigation, selector, popup, screenshot, or stale-page diagnostic.
 
-On that error, the agent **MUST NOT** call `ensureWebBrowser()` or `ensureMobileBrowser()`, inspect pages, screenshot, create a page, navigate, retry an action or use any other visible Chromium window. It **MUST** stop and report that the browser bound to this OpenCode session was closed. The runtime refuses to relaunch from that controller or adopt a browser owned by another session.
+On that error, the agent **MUST NOT** call `ensureWebBrowser()` or `ensureMobileBrowser()`, inspect pages, screenshot, create a page, navigate, retry an action or use any other visible browser window. It **MUST** stop and report that the browser bound to this OpenCode session was closed. The runtime refuses to relaunch from that controller or adopt a browser owned by another session.
 
 A new browser may be opened only after the user explicitly requests it. Reset the REPL, rerun setup and the complete startup block, then verify the new `stealth.binding` before navigating. The new controller remains scoped to the same OpenCode session and its own profile.
 
@@ -432,7 +437,7 @@ Available methods include `resolveVisible`, `interactiveElements`, `moveTo`, `cl
 
 ## Mobile
 
-Managed mobile mode is a Chromium responsive-touch cohort with a 390x844 viewport, matching screen dimensions, and device scale factor 3. It deliberately retains Chromium's native version-coherent user agent instead of claiming to be iPhone Safari.
+Managed mobile mode is a responsive-touch cohort with a 390x844 viewport, matching screen dimensions, and device scale factor 3. It deliberately retains the engine's native version-coherent user agent instead of claiming to be iPhone Safari.
 
 Desktop and mobile cannot share the session profile concurrently. Only when the user explicitly requests a switch to mobile, close desktop first and then use the existing runtime:
 
@@ -491,7 +496,7 @@ Use `appWindow.screenshot()` instead in Electron mode.
 
 ## Electron
 
-Electron is always separate from Chromium stealth and uses the Electron startup block. Use ordinary Playwright APIs against `appWindow`.
+Electron is always separate from managed stealth and uses the Electron startup block. Use ordinary Playwright APIs against `appWindow`.
 
 Do not create scratch pages from an Electron context. Reload renderer-only changes with `appWindow.reload()` and relaunch for main-process, preload, startup, or process-ownership changes.
 
@@ -520,4 +525,4 @@ Wait for `Playwright session closed` before resetting the REPL when cleanup can 
 
 ## Remote Stealth Limits
 
-It improves persistent identity, lifecycle consistency, task-bound humanized input, and identity coherence, and it closes the known Playwright protocol leaks (Runtime.enable, utility-world naming) plus Chromium's automation-controlled disclosure, but it does not guarantee undetectability. It does not spoof another browser, generate ambient input, rotate network identity, or manipulate challenge systems. TLS/HTTP-2 fingerprinting, GPU and OS-level signals, profile history, worker and service-worker realms, and long-horizon behavioral coherence remain outside skill control.
+It improves persistent identity, lifecycle consistency, task-bound humanized input, and identity coherence, and it relies on Camoufox's native anti-detection patches — C++-level fingerprint injection, sandboxed page-agent execution, and `navigator.webdriver` hiding — instead of Chromium JavaScript-level stealth flags, but it does not guarantee undetectability. It does not spoof another browser, generate ambient input, rotate network identity, or manipulate challenge systems. TLS/HTTP-2 fingerprinting, GPU and OS-level signals, profile history, worker and service-worker realms, and long-horizon behavioral coherence remain outside skill control.

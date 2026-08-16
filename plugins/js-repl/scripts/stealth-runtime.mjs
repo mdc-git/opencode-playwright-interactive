@@ -32,21 +32,23 @@ const modifierList = (modifiers) => Array.isArray(modifiers) ? modifiers : modif
 
 export async function installStealthRuntime({
   chromium,
+  browserEngine = "chromium",
   opencode,
   headless = false,
   webProfileDir,
   mobileProfileDir,
 } = {}) {
   if (installedRuntime) return installedRuntime;
-  if (!chromium?.launchPersistentContext) throw new TypeError("The shared Playwright chromium object is required");
+  if (!chromium?.launchPersistentContext) throw new TypeError("The shared Playwright launcher (chromium or a camoufox firefox shim) is required");
+  if (browserEngine !== "chromium" && browserEngine !== "camoufox") throw new TypeError("browserEngine must be \"chromium\" or \"camoufox\"");
   if ((!opencode?.homeDir && !opencode?.tmpDir) || !opencode?.sessionId || typeof opencode.bindBrowser !== "function") throw new TypeError("The session-aware js_repl opencode runtime object is required");
 
-  const runtime = createRuntime({ chromium, opencode, headless, webProfileDir, mobileProfileDir });
+  const runtime = createRuntime({ chromium, browserEngine, opencode, headless, webProfileDir, mobileProfileDir });
   installedRuntime = Object.freeze(runtime);
   return installedRuntime;
 }
 
-function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProfileDir }) {
+function createRuntime({ chromium, browserEngine, opencode, headless, webProfileDir, mobileProfileDir }) {
   let webSession;
   let mobileSession;
   const runtimeSessionId = opencode.sessionId;
@@ -68,11 +70,11 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     const conflictingOptions = IDENTITY_CONTEXT_OPTIONS.filter((key) => suppliedOptions.some((options) => Object.prototype.hasOwnProperty.call(options, key)));
     if (conflictingOptions.length) throw new Error(`Identity-critical launch and context options are managed by the runtime: ${conflictingOptions.join(", ")}`);
     const conflictingArguments = (launchOptions.args || []).filter((argument) => IDENTITY_ARGUMENTS.some((prefix) => argument === prefix || argument.startsWith(`${prefix}=`)));
-    if (conflictingArguments.length) throw new Error(`Identity-critical Chromium arguments are managed by the runtime: ${conflictingArguments.join(", ")}`);
+    if (conflictingArguments.length) throw new Error(`Identity-critical browser arguments are managed by the runtime: ${conflictingArguments.join(", ")}`);
     const conflictingHeaders = suppliedOptions
       .flatMap((options) => Object.keys(options.extraHTTPHeaders || {}))
       .filter((header) => IDENTITY_HEADERS.includes(header.toLowerCase()));
-    if (conflictingHeaders.length) throw new Error(`Identity-critical HTTP headers are managed by Chromium: ${[...new Set(conflictingHeaders)].join(", ")}`);
+    if (conflictingHeaders.length) throw new Error(`Identity-critical HTTP headers are managed by the browser: ${[...new Set(conflictingHeaders)].join(", ")}`);
   };
 
   const targetBox = async (currentPage, target, browserBinding) => {
@@ -118,7 +120,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
   const createStealthController = async ({ chromium: suppliedChromium, headless: suppliedHeadless, dataDir, launchOptions = {}, contextOptions = {}, profileKind = "desktop" } = {}) => {
     const launchChromium = suppliedChromium || chromium;
     const launchHeadless = suppliedHeadless ?? headless;
-    if (!launchChromium?.launchPersistentContext) throw new TypeError("createStealthController requires the shared Playwright chromium object");
+    if (!launchChromium?.launchPersistentContext) throw new TypeError("createStealthController requires a Playwright-compatible launcher (chromium or camoufox firefox shim)");
     assertCoherentLaunchOptions(launchOptions, contextOptions);
     const paths = stealthPaths({ dataDir });
     let existing = controllerRegistry.get(paths.root);
@@ -143,7 +145,12 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     metadata.sessionId = runtimeSessionId;
     await writeRecord(paths.identityMetadata, metadata);
     const mobile = profileKind === "mobile";
-    const args = [...STEALTH_ARGUMENTS, ...(launchOptions.args || [])];
+    // Camoufox provides its stealth and identity natively (C++ level patches
+    // in the Firefox fork); injecting Chromium stealth flags would leak or
+    // break launch, so they apply only to the Chromium engine.
+    const args = browserEngine === "camoufox"
+      ? [...(launchOptions.args || [])]
+      : [...STEALTH_ARGUMENTS, ...(launchOptions.args || [])];
     const emulatedViewport = mobile ? { ...MOBILE_VIEWPORT } : null;
     const options = {
       ...launchOptions,
@@ -167,7 +174,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
     const browserVersion = persistentContext.browser()?.version?.() || "unknown";
     const browserBinding = opencode.bindBrowser({ browser: persistentContext.browser(), context: persistentContext, browserId: profile.profileId, profileKind });
     const identity = Object.freeze({
-      browserEngine: "chromium",
+      browserEngine,
       browserVersion,
       browserIdentity: "native",
       userAgentOverride: false,
@@ -578,7 +585,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       pageState: (currentPage) => { const state = requirePage(currentPage); return Object.freeze({ registered: true, binding, pageId: state.pageId, busy: state.busy, action: state.action, stopped: state.stopped, lastDocumentStatus: state.lastDocumentStatus }); },
       managed: (currentPage) => { requirePage(currentPage); return true; },
       telemetry: () => Object.freeze({ ...telemetry }),
-      capabilities: () => Object.freeze({ state: status, binding, profileKind, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, ambientInput: false, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "unmanaged", serviceWorkers: "unmanaged", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: identity.deviceScaleFactor, userAgent: undefined, identity, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, runtimeCdpPatch: "patchright (installed as the shared Playwright driver; verify with stealth-audit)", automationControlledFlag: false, standardPlaywrightProtocol: true, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
+      capabilities: () => Object.freeze({ state: status, binding, profileKind, persistentIdentity: true, behaviorSchema: profile.schema, personaSchema: persona.schema, managedInput: true, ambientInput: false, automaticPagesAndPopups: true, frameLifecycle: true, crossFrameTargetResolution: true, semanticInteractiveInventory: true, postNavigationInventoryGraceMs: 1800, documentInitScript: false, dedicatedWorkers: "unmanaged", serviceWorkers: "unmanaged", mobile, touch: mobile, locale: persona.locale, timezoneId: persona.timezoneId, deviceScaleFactor: identity.deviceScaleFactor, userAgent: undefined, identity, sharedProfileRequiresSequentialModes: !dataDir, artifacts: Object.freeze({ bindings: false, cdp: false, runtimeCdpPatch: browserEngine === "camoufox" ? "none — Camoufox Juggler protocol sandboxing" : "standard Chromium CDP (no driver patch)", automationControlledFlag: false, standardPlaywrightProtocol: true, privatePlaywrightApis: false, tracing: false, har: false, video: false }) }),
       resolveVisible,
       interactiveElements,
       moveTo: (currentPage, target) => queueAction(currentPage, "moveTo", (state) => moveToTarget(currentPage, state, target)),
