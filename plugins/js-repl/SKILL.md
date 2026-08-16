@@ -83,7 +83,9 @@ return await tools.js_repl({
 var { launchOptions } = await import("camoufox-js");
 var chromium = {
   launchPersistentContext: async (userDataDir, overrideOptions) =>
-    core.firefox.launchPersistentContext(userDataDir, { ...(await launchOptions({})), ...overrideOptions }),
+    // enable_cache is REQUIRED: camoufox disables caching by default and the
+    // official docs state page.go_back()/go_forward() do not work without it.
+    core.firefox.launchPersistentContext(userDataDir, { ...(await launchOptions({ enable_cache: true })), ...overrideOptions }),
 };
 var path = await import("node:path");
 var fs = await import("node:fs/promises");
@@ -255,6 +257,8 @@ if (navigationKind !== "no-navigation" && !page.isClosed()) {
 ```
 
 New tabs and popups are registered automatically by the controller. After a navigation-capable click, the agent **MUST** update the shared `page` handle when one new page opened and **MUST** inspect `stealth.pages()` when multiple pages opened or the observed UI is not on the expected page. It **MUST NOT** keep querying the original tab merely because that handle still exists. A new tab is possible, not guaranteed; do not require one unless the application behavior requires it.
+
+For history back/forward navigation, use `page.goBack()` / `page.goForward()`; they work on the Camoufox driver because startup enables `enable_cache`. Avoid expecting `Alt+ArrowLeft` or other browser-chrome shortcuts to navigate: Juggler-synthesized input does not trigger chrome-level shortcuts in Firefox (fails on vanilla Playwright Firefox too).
 
 ## Stuck Or Guessing
 
