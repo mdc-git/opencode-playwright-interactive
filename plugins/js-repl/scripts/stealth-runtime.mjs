@@ -414,25 +414,61 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
       const frames = currentPage.frames().filter((frame) => frame === currentPage.mainFrame() || !["", "about:blank"].includes(frame.url()));
       const groups = await Promise.all(frames.map(async (frame, frameIndex) => {
         const candidates = frame.locator(selector);
-        const details = await candidates.evaluateAll((elements, options) => elements.map((element, index) => {
+        const details = await candidates.evaluateAll((elements, options) => {
+          const resolveId = (el, id) => {
+            if (!id) return null;
+            const root = el.getRootNode();
+            if (root.getElementById) { const f = root.getElementById(id); if (f) return f; }
+            return el.ownerDocument.getElementById(id);
+          };
+          const flat = (s) => s ? s.replace(/\s+/g, " ").trim() : "";
+          const collectText = (node) => {
+            if (node.nodeType === 3) return node.textContent || "";
+            if (node.nodeType !== 1) return "";
+            let text = "";
+            for (let child = node.firstChild; child; child = child.nextSibling) {
+              if (child.nodeType === 1 && (child.getAttribute("aria-hidden") === "true" || child.hidden)) continue;
+              text += collectText(child);
+            }
+            return text;
+          };
+          const computeName = (el, viaLabelledBy = false, visiting = new Set()) => {
+            if (!el || visiting.has(el)) return "";
+            visiting.add(el);
+            if (!viaLabelledBy) {
+              const labelledBy = el.getAttribute("aria-labelledby");
+              if (labelledBy && labelledBy.trim()) {
+                const parts = labelledBy.trim().split(/\s+/).map((id) => {
+                  const target = resolveId(el, id);
+                  return target ? computeName(target, true, visiting) : "";
+                }).filter(Boolean);
+                if (parts.length) return flat(parts.join(" "));
+              }
+            }
+            const ariaLabel = el.getAttribute("aria-label");
+            if (ariaLabel && ariaLabel.trim()) return flat(ariaLabel);
+            if (el.getAttribute("aria-labelledby") === null && el.labels && el.labels.length) {
+              const labelParts = [...el.labels].map((label) => collectText(label)).filter(Boolean);
+              if (labelParts.length) return flat(labelParts.join(" "));
+            }
+            const alt = el.getAttribute("alt");
+            if (alt && alt.trim()) return flat(alt);
+            const text = collectText(el);
+            if (text && text.trim()) return flat(text);
+            const placeholder = el.getAttribute("placeholder");
+            if (placeholder && placeholder.trim()) return flat(placeholder);
+            const title = el.getAttribute("title");
+            if (title && title.trim()) return flat(title);
+            return "";
+          };
+          return elements.map((element, index) => {
           const rect = element.getBoundingClientRect();
           let visible = rect.width > 0 && rect.height > 0 && !element.hidden;
           if (visible && typeof element.checkVisibility === "function") visible = element.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
           if (!options.includeHidden && !visible) return undefined;
           const tag = element.tagName.toLowerCase();
           const type = element.getAttribute("type")?.toLowerCase();
-          // Accessible-name approximation: aria-labelledby outranks aria-label
-          // per the accName spec; then native labels, alt, text, placeholder,
-          // title. This is a heuristic, not the full browser algorithm.
-          const labelledBy = (element.getAttribute("aria-labelledby") || "")
-            .split(/\s+/)
-            .map((id) => id && element.ownerDocument.getElementById(id))
-            .filter(Boolean)
-            .map((node) => (node.textContent || "").trim())
-            .filter(Boolean)
-            .join(" ");
-          const labels = element.labels ? [...element.labels].map((label) => label.textContent?.trim()).filter(Boolean).join(" ") : "";
-          const name = labelledBy || element.getAttribute("aria-label")?.trim() || labels || element.getAttribute("alt")?.trim() || (element.textContent || "").trim() || element.getAttribute("placeholder")?.trim() || element.getAttribute("title")?.trim() || "";
+          const name = computeName(element);
           let nativeRole = "";
           if (tag === "button" || tag === "summary" || ["button", "submit", "reset", "image"].includes(type)) nativeRole = "button";
           else if (tag === "a" && element.hasAttribute("href")) nativeRole = "link";
@@ -460,7 +496,7 @@ function createRuntime({ chromium, opencode, headless, webProfileDir, mobileProf
             ? Boolean(element.selected)
             : ariaState("aria-selected") ?? (options.selectedRoles.includes(role) ? false : undefined);
           return { index, visible, tag, type: type || "", role, name: name.slice(0, 240), disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"), checked, selected, href: element.href || "" };
-        }).filter(Boolean), { includeHidden, structuralRoles: STRUCTURAL_ROLES, checkedRoles: ["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"], selectedRoles: ["option", "tab", "treeitem"] }).catch(() => []);
+          }).filter(Boolean); }, { includeHidden, structuralRoles: STRUCTURAL_ROLES, checkedRoles: ["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"], selectedRoles: ["option", "tab", "treeitem"] }).catch(() => []);
         return { frame, frameIndex, candidates, details, index: 0 };
       }));
       const entries = [];
