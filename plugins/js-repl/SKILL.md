@@ -36,8 +36,8 @@ Send this complete block as the first `execute` call after setup:
 
 ```js
 return await tools.js_repl({
-  code: `var playwright = await import("playwright");
-var electronLauncher = playwright._electron;
+  code: `var patchright = await import("patchright");
+var electronLauncher = patchright._electron;
 var ELECTRON_ENTRY = ".";
 var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] });
 var appWindow = await electronApp.firstWindow();
@@ -55,8 +55,8 @@ Send this complete block as the first `execute` call after setup:
 
 ```js
 return await tools.js_repl({
-  code: `var playwright = await import("playwright");
-var chromium = playwright.chromium;
+  code: `var patchright = await import("patchright");
+var chromium = patchright.chromium;
 var HEADLESS = false;
 var browser = await chromium.launch({ headless: HEADLESS });
 var context = await browser.newContext();
@@ -79,8 +79,8 @@ Send this complete block as the first `execute` call after setup:
 
 ```js
 return await tools.js_repl({
-  code: `var playwright = await import("playwright");
-var chromium = playwright.chromium;
+  code: `var patchright = await import("patchright");
+var chromium = patchright.chromium;
 var path = await import("node:path");
 var fs = await import("node:fs/promises");
 var { pathToFileURL } = await import("node:url");
@@ -147,11 +147,11 @@ The managed-controller sections from **Scrolling** through **Mobile** apply only
 - `stealth.binding` and `stealth.pageState(page)` identify the OpenCode session, managed browser and managed page. Before resuming after any browser lifecycle change, the agent **MUST** verify that the active controller and page report the same binding. A controller rejects pages, locators and profile metadata from another session.
 - Never use a personal Chrome profile.
 
-The runtime keeps the native Chromium user agent. Setup installs the maintained rebrowser-playwright drop-in package, which closes the `Runtime.enable` CDP leak and renames the utility world, plus a guarded correction that scopes child-frame execution-context cleanup to that frame instead of clearing the whole CDP session. Chromium always launches with `--disable-blink-features=AutomationControlled`. The runtime rejects caller-supplied identity-critical launch options, context options, HTTP headers, and Chromium arguments rather than combining contradictory browser, locale, viewport, device, or automation claims. Mobile mode is responsive touch emulation in Chromium, not Safari or physical-device impersonation. Managed input is task-bound: the runtime emits no ambient pointer movement while idle.
+The runtime keeps the native Chromium user agent. Setup installs the current patchright package, a maintained fork of the Playwright driver with its stealth patches baked into the distributed driver: it avoids the `Runtime.enable` CDP leak by executing scripts in isolated execution contexts and tweaks the driver defaults and launch behavior. Chromium always launches with `--disable-blink-features=AutomationControlled`. The runtime rejects caller-supplied identity-critical launch options, context options, HTTP headers, and Chromium arguments rather than combining contradictory browser, locale, viewport, device, or automation claims. Mobile mode is responsive touch emulation in Chromium, not Safari or physical-device impersonation. Managed input is task-bound: the runtime emits no ambient pointer movement while idle.
 
 ### Diagnostics And Sensitive Artifacts
 
-Use `stealth.identity`, `stealth.capabilities()`, `stealth.telemetry()`, and `stealth.pageState(page)` for coarse diagnostics. They report browser/version policy, emulation mode, managed-action counts, navigation counts, popup counts, failures, and the most recent main-document status, and they record no page fingerprints, interaction traces, or credentials. URLs appear only where targeting needs them: element inventories list frame URLs and hrefs, and target-resolution errors report the frame URLs that were searched.
+Use `stealth.identity`, `stealth.capabilities()`, `stealth.telemetry()`, and `stealth.pageState(page)` for coarse diagnostics. They report browser/version policy, emulation mode, managed-action counts, navigation counts, popup counts, failures, and the most recent main-document status, and they record no page fingerprints, interaction traces, or credentials. URLs appear only where targeting needs them: element inventories list computed roles, accessible names, and control states, and target-resolution errors report the frame URLs that were searched.
 
 ```js
 ({
@@ -301,7 +301,7 @@ await stealth.click(page, page.getByRole("button", { name: "Continue" }));
 
 A control you can see on screen may live in a same-origin or cross-origin iframe, and child frames may attach asynchronously after `domcontentloaded`. Absence of an element from the main-frame DOM is **never** evidence that a visible control is absent from the browser UI. In particular, cookie/consent/data-protection banners are commonly hosted in a third-party iframe (a "CMP") precisely to keep them out of the main document.
 
-When the exact accessible name is already known, resolve it across current and newly attached frames through the controller. If a site puts an invalid structural ARIA role on a native control, `resolveVisible()` also checks the normalized interactive inventory and returns its controller-owned locator when that semantic match is unique:
+When the exact accessible name is already known, resolve it across current and newly attached frames through the controller. If the role/name lookups miss (for example the site's markup makes the browser compute a role or name different from the raw attributes), `resolveVisible()` also re-checks the browser-computed interactive inventory and returns its controller-owned locator when that semantic match is unique:
 
 ```js
 var resolvedTarget = await stealth.resolveVisible(
@@ -313,16 +313,16 @@ await stealth.click(page, resolvedTarget.locator);
 resolvedTarget.frame.url();
 ```
 
-When the exact element is unknown, take one snapshot of all visible interactive DOM elements across every current frame and open shadow root. The first inventory after navigation allows one short render window for asynchronously attached UI; it does not wait for element counts to settle or truncate the result, and later inventories are immediate. It returns live locators plus semantic evidence; choose the element whose role, accessible-name evidence, state, and context fit the user's request. On very large pages the caller **MAY** bound the result with `{ limit: N }` (default is untruncated):
+When the exact element is unknown, take one snapshot of the browser accessibility tree across every current frame and open shadow root. The first inventory after navigation allows one short render window for asynchronously attached UI; it does not wait for element counts to settle or truncate the result, and later inventories are immediate. It returns live locators plus semantic evidence; choose the element whose role, accessible-name evidence, state, and context fit the user's request. On very large pages the caller **MAY** bound the result with `{ limit: N }` (default is untruncated):
 
 ```js
 var interactive = await stealth.interactiveElements(page);
 interactive.map((entry, index) =>
-  index + " frame=" + entry.frameIndex + " " + (entry.role || entry.tag) + " " + JSON.stringify(entry.name) + " disabled=" + entry.disabled
+  index + " " + entry.role + " " + JSON.stringify(entry.name) + " disabled=" + entry.disabled
 ).join("\n");
 ```
 
-The agent **MUST** read the complete inventory and identify the intended entry semantically. Before that review it **MUST NOT** filter entries by role, tag, frame, URL, guessed keyword, or language-specific regex; controls that look like buttons may be links or custom-role elements. Once identified, retain and interact with the returned locator directly, for example `var target = interactive[index]; await stealth.click(page, target.locator)`. It **MUST NOT** discard that locator and reconstruct `getByRole()` from the reported role because the inventory may normalize invalid site ARIA to native control semantics. If no inventory entry clearly fits the request, capture and visually inspect the required full-page screenshot; use its actual visible wording with `stealth.resolveVisible()` rather than guessing another selector. If a frame or control attaches after the snapshot, take one fresh complete inventory rather than waiting for arbitrary DOM stability.
+The agent **MUST** read the complete inventory and identify the intended entry semantically. Before that review it **MUST NOT** filter entries by role, frame, URL, guessed keyword, or language-specific regex; controls that look like buttons may be links or custom-role elements. Once identified, retain and interact with the returned locator directly, for example `var target = interactive[index]; await stealth.click(page, target.locator)`. It **MUST NOT** discard that locator and reconstruct `getByRole()` from the reported role: the inventory reports the browser-computed accessible role and name (real WAI-ARIA name computation, including `aria-labelledby` chains, `<label>` elements, and shadow-root content), which can differ from the raw markup. If no inventory entry clearly fits the request, capture and visually inspect the required full-page screenshot; use its actual visible wording with `stealth.resolveVisible()` rather than guessing another selector. If a frame or control attaches after the snapshot, take one fresh complete inventory rather than waiting for arbitrary DOM stability.
 
 The agent **MUST NOT** conclude that a requested visible control does not exist after querying only the main frame. It **MUST NOT** inspect frames one by one across multiple tool calls when these controller methods can establish the result once.
 
@@ -330,7 +330,7 @@ The agent **MUST NOT** conclude that a requested visible control does not exist 
 
 ARIA landmarks and structural roles such as `search`, `main`, `navigation`, `banner`, `region`, `heading`, `list`, and `presentation` normally describe containers. The agent **MUST NOT** click, fill, or otherwise act on a structural element with one of these roles. It must locate the nested `button`, `link`, `textbox`, `searchbox`, or `combobox` instead.
 
-Some sites incorrectly put a structural role on a native control. For example, an `<a href="/search" role="search">` is still an actionable link because it has native link behavior. `interactiveElements()` keeps such controls and reports their native role while excluding plain landmarks and focusable content containers. The reported native role is selection evidence, not a valid `getByRole()` query for malformed site markup; use the returned locator. If a screenshot shows a search affordance but the inventory has no matching control, use the visible wording to resolve a nested actionable role across frames. If that still produces no clear target, follow **Stuck Or Guessing** rather than clicking the surrounding container.
+Sites sometimes put a structural role on a native control: an `<a href="/search" role="search">` is still clickable, and the browser reports it under the explicit `search` role with a pointer cursor. `interactiveElements()` keeps any element the browser also reports with a pointer cursor, under its computed role, so such controls stay actionable while plain landmarks and focusable content containers stay excluded. The computed role is selection evidence, not a valid `getByRole()` query for such markup; use the returned locator. If a screenshot shows a search affordance but the inventory has no matching control, use the visible wording to resolve a nested actionable role across frames. If that still produces no clear target, follow **Stuck Or Guessing** rather than clicking the surrounding container.
 
 ## Target Diagnostics
 
