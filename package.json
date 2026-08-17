@@ -1,15 +1,49 @@
 {
   "name": "opencode-playwright-interactive",
   "version": "1.0.0",
+  "description": "Persistent Playwright and Electron QA through js_repl, a session-isolated Node.js runtime for opencode.",
+  "license": "MIT",
+  "repository": "github:mdc-git/opencode-playwright-interactive",
   "type": "module",
   "exports": "./plugins/js-repl/index.ts",
-  "dependencies": {
-    "@opencode-ai/plugin": "next",
-    "@opencode-ai/schema": "next",
-    "effect": "latest"
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.0.0"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/mdc-git/opencode-playwright-interactive.git"
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "check:deps": "depcruise --config .dependency-cruiser.mjs plugins",
+    "check:knip": "knip"
+  },
+  "files": [
+    "plugins"
+  ],
+  "keywords": [
+    "opencode-plugin",
+    "playwright",
+    "electron",
+    "javascript-repl",
+    "qa"
+  ],
+  "dependencies": {
+    "@opencode-ai/plugin": "^0.0.0-next-17444",
+    "@opencode-ai/schema": "^0.0.0-next-17444",
+    "effect": "^4.0.0-beta.101"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "dependency-cruiser": "^16.10.4",
+    "eslint": "^10.8.1",
+    "eslint-config-xo": "^1.0.0",
+    "eslint-plugin-boundaries": "^7.2.0",
+    "eslint-plugin-sonarjs": "^4.2.0",
+    "globals": "^17.11.0",
+    "knip": "^5.88.1",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3"
   }
 }

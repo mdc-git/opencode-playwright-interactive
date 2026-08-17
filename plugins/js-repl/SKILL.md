@@ -19,7 +19,7 @@ The words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOU
 Run setup first:
 
 ```js
-return await tools.js_repl_playwright_setup({});
+return await tools.js_repl_playwright_setup({})
 ```
 
 For every browser or Electron request, the agent **MUST** run setup as above, then select exactly one startup mode before the first `tools.js_repl` call:
@@ -43,8 +43,8 @@ var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] });
 var appWindow = await electronApp.firstWindow();
 appWindow.setDefaultTimeout(10000);
 ({ status: "Loaded Electron window", title: await appWindow.title() });`,
-  timeout_ms: 30000,
-});
+  timeout_ms: 30000
+})
 ```
 
 Set `ELECTRON_ENTRY` to `.` when `package.json.main` is correct, or use a direct main-process path. Do not add Chromium setup to this block.
@@ -65,8 +65,8 @@ var localBrowserSession = opencode.bindBrowser({ browser, context, profileKind: 
 var localBrowserBinding = localBrowserSession.binding;
 var assertLocalPage = localBrowserSession.assertPage;
 ({ status: "Standard Chromium opened", binding: localBrowserBinding });`,
-  timeout_ms: 30000,
-});
+  timeout_ms: 30000
+})
 ```
 
 Set `HEADLESS = true` only when the environment has no graphical display. Local mode uses ordinary Playwright locators, input, pages, contexts, screenshots, and lifecycle methods. The agent **MUST NOT** import `stealth-runtime.mjs`, create a stealth controller, use a stealth profile, or apply managed behavioral input in this mode.
@@ -123,8 +123,8 @@ if (
   throw new Error("Managed stealth capability verification failed");
 }
 ({ status: "Managed stealth browser opened", capabilities: stealthCapabilities });`,
-  timeout_ms: 30000,
-});
+  timeout_ms: 30000
+})
 ```
 
 The agent **MUST NOT** split, shorten, rewrite, or precede the selected startup block with exploratory `js_repl` calls. In remote mode, `Managed stealth browser opened` is the only successful startup result. If setup or the selected block fails, the agent **MUST** stop and report the exact error without attempting another startup mode.
@@ -161,11 +161,11 @@ The runtime keeps the browser's native user agent and identity. Setup installs P
 Use `stealth.identity`, `stealth.capabilities()`, `stealth.telemetry()`, and `stealth.pageState(page)` for coarse diagnostics. They report browser/version policy, emulation mode, managed-action counts, navigation counts, popup counts, failures, and the most recent main-document status, and they record no page fingerprints, interaction traces, or credentials. URLs appear only where targeting needs them: element inventories list computed roles, accessible names, and control states, and target-resolution errors report the frame URLs that were searched.
 
 ```js
-({
+;({
   identity: stealth.identity,
   telemetry: stealth.telemetry(),
-  page: stealth.pageState(page),
-});
+  page: stealth.pageState(page)
+})
 ```
 
 Traces, HAR files, video, screenshots, storage state, cookies, and challenge tokens may contain credentials or personal data. Capture only what the task requires, avoid recording secret-bearing states, do not print tokens or cookies, and keep emitted diagnostics coarse. The managed runtime leaves tracing, HAR, and video disabled by default.
@@ -175,11 +175,11 @@ Traces, HAR files, video, screenshots, storage state, cookies, and challenge tok
 Start and verify the application server before navigating. Prefer `127.0.0.1` over `localhost`.
 
 ```js
-var TARGET_URL = "http://127.0.0.1:3000";
-page.setDefaultTimeout(10000);
-page.setDefaultNavigationTimeout(30000);
-await page.goto(TARGET_URL, { waitUntil: "domcontentloaded" });
-({ url: page.url(), title: await page.title() });
+var TARGET_URL = 'http://127.0.0.1:3000'
+page.setDefaultTimeout(10000)
+page.setDefaultNavigationTimeout(30000)
+await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' })
+;({ url: page.url(), title: await page.title() })
 ```
 
 Do not navigate during startup merely to prove that the browser opened. The selected startup block's result is sufficient.
@@ -229,31 +229,35 @@ A new browser may be opened only after the user explicitly requests it. Reset th
 A click may navigate the current page, open a new tab or popup, or leave navigation unchanged. The agent **MUST NOT** assume which outcome occurred. For any click that may navigate, snapshot the managed pages and current URL, perform the click, then resolve the observed outcome:
 
 ```js
-var pageBeforeClick = page;
-var urlBeforeClick = page.url();
-var pagesBeforeClick = new Set(stealth.pages());
-await stealth.click(page, navigationLocator);
+var pageBeforeClick = page
+var urlBeforeClick = page.url()
+var pagesBeforeClick = new Set(stealth.pages())
+await stealth.click(page, navigationLocator)
 
-var openedPages = [];
-var navigationDeadline = Date.now() + 5000;
+var openedPages = []
+var navigationDeadline = Date.now() + 5000
 while (Date.now() < navigationDeadline) {
-  openedPages = stealth.pages().filter((candidate) => !pagesBeforeClick.has(candidate));
-  if (openedPages.length || (!pageBeforeClick.isClosed() && pageBeforeClick.url() !== urlBeforeClick)) break;
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  openedPages = stealth.pages().filter((candidate) => !pagesBeforeClick.has(candidate))
+  if (
+    openedPages.length ||
+    (!pageBeforeClick.isClosed() && pageBeforeClick.url() !== urlBeforeClick)
+  )
+    break
+  await new Promise((resolve) => setTimeout(resolve, 50))
 }
 
 var navigationKind = openedPages.length
-  ? "new-page"
-  : (!pageBeforeClick.isClosed() && pageBeforeClick.url() !== urlBeforeClick)
-    ? "same-page"
-    : "no-navigation";
+  ? 'new-page'
+  : !pageBeforeClick.isClosed() && pageBeforeClick.url() !== urlBeforeClick
+    ? 'same-page'
+    : 'no-navigation'
 
-if (openedPages.length === 1) page = openedPages[0];
-else page = pageBeforeClick;
-if (navigationKind !== "no-navigation" && !page.isClosed()) {
-  await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+if (openedPages.length === 1) page = openedPages[0]
+else page = pageBeforeClick
+if (navigationKind !== 'no-navigation' && !page.isClosed()) {
+  await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {})
 }
-({ navigationKind, pages: stealth.pages().map((candidate) => candidate.url()) });
+;({ navigationKind, pages: stealth.pages().map((candidate) => candidate.url()) })
 ```
 
 New tabs and popups are registered automatically by the controller. After a navigation-capable click, the agent **MUST** update the shared `page` handle when one new page opened and **MUST** inspect `stealth.pages()` when multiple pages opened or the observed UI is not on the expected page. It **MUST NOT** keep querying the original tab merely because that handle still exists. A new tab is possible, not guaranteed; do not require one unless the application behavior requires it.
@@ -274,8 +278,8 @@ If the unexpected state followed a click, first list the open managed pages and 
 stealth.pages().map((candidate, index) => ({
   index,
   url: candidate.url(),
-  closed: candidate.isClosed(),
-}));
+  closed: candidate.isClosed()
+}))
 ```
 
 Select the page containing the expected destination before taking the required screenshot. Do not screenshot and debug a stale opener tab when the click opened a new managed page.
@@ -284,15 +288,15 @@ Before running another inspection script or attempting another locator, capture 
 
 ```js
 var stuckScreenshot = await stealth.screenshot(page, {
-  type: "png",
-  scale: "css",
-  fullPage: true,
-});
+  type: 'png',
+  scale: 'css',
+  fullPage: true
+})
 await opencode.emitImage({
   bytes: stuckScreenshot,
-  mimeType: "image/png",
-  filename: "playwright-stuck-state.png",
-});
+  mimeType: 'image/png',
+  filename: 'playwright-stuck-state.png'
+})
 ```
 
 The agent **MUST** visually inspect the emitted image before choosing the next action. It **MUST NOT** continue cycling through selectors, code inspection, or speculative scripts without this visual checkpoint. For mobile, use `mobileStealth.screenshot(mobilePage, ...)` with the same options. Screenshots **SHOULD** use `fullPage: true`; fall back to a viewport capture only when full-page capture fails or exceeds the image attachment limit.
@@ -303,9 +307,11 @@ The agent **MUST** visually inspect the emitted image before choosing the next a
 
 ```js
 // preferred, frame- and shadow-root-aware:
-var t = await stealth.resolveVisible(page, (frame) => frame.getByRole("button", { name: "Continue" }));
+var t = await stealth.resolveVisible(page, (frame) =>
+  frame.getByRole('button', { name: 'Continue' })
+)
 // avoid: bare main-document-only lookup
-await stealth.click(page, page.getByRole("button", { name: "Continue" }));
+await stealth.click(page, page.getByRole('button', { name: 'Continue' }))
 ```
 
 A control you can see on screen may live in a same-origin or cross-origin iframe, and child frames may attach asynchronously after `domcontentloaded`. Absence of an element from the main-frame DOM is **never** evidence that a visible control is absent from the browser UI. In particular, cookie/consent/data-protection banners are commonly hosted in a third-party iframe (a "CMP") precisely to keep them out of the main document.
@@ -315,20 +321,23 @@ When the exact accessible name is already known, resolve it across current and n
 ```js
 var resolvedTarget = await stealth.resolveVisible(
   page,
-  (frame) => frame.getByRole("button", { name: "Continue", exact: true }),
-  { timeout: 5000 },
-);
-await stealth.click(page, resolvedTarget.locator);
-resolvedTarget.frame.url();
+  (frame) => frame.getByRole('button', { name: 'Continue', exact: true }),
+  { timeout: 5000 }
+)
+await stealth.click(page, resolvedTarget.locator)
+resolvedTarget.frame.url()
 ```
 
 When the exact element is unknown, take one snapshot of the browser accessibility tree across every current frame and open shadow root. The first inventory after navigation allows one short render window for asynchronously attached UI; it does not wait for element counts to settle or truncate the result, and later inventories are immediate. It returns live locators plus semantic evidence; choose the element whose role, accessible-name evidence, state, and context fit the user's request. On very large pages the caller **MAY** bound the result with `{ limit: N }` (default is untruncated):
 
 ```js
-var interactive = await stealth.interactiveElements(page);
-interactive.map((entry, index) =>
-  index + " " + entry.role + " " + JSON.stringify(entry.name) + " disabled=" + entry.disabled
-).join("\n");
+var interactive = await stealth.interactiveElements(page)
+interactive
+  .map(
+    (entry, index) =>
+      index + ' ' + entry.role + ' ' + JSON.stringify(entry.name) + ' disabled=' + entry.disabled
+  )
+  .join('\n')
 ```
 
 The agent **MUST** read the complete inventory and identify the intended entry semantically. Before that review it **MUST NOT** filter entries by role, frame, URL, guessed keyword, or language-specific regex; controls that look like buttons may be links or custom-role elements. Once identified, retain and interact with the returned locator directly, for example `var target = interactive[index]; await stealth.click(page, target.locator)`. It **MUST NOT** discard that locator and reconstruct `getByRole()` from the reported role: the inventory reports the browser-computed accessible role and name (real WAI-ARIA name computation, including `aria-labelledby` chains, `<label>` elements, and shadow-root content), which can differ from the raw markup. If no inventory entry clearly fits the request, capture and visually inspect the required full-page screenshot; use its actual visible wording with `stealth.resolveVisible()` rather than guessing another selector. If a frame or control attaches after the snapshot, take one fresh complete inventory rather than waiting for arbitrary DOM stability.
@@ -347,52 +356,48 @@ Playwright locators can resolve elements inside frames and open shadow roots. A 
 
 ```js
 var targetDiagnostic = await targetLocator.evaluate((element) => {
-  var rect = element.getBoundingClientRect();
-  var root = element.getRootNode();
-  var hitTestRoot = typeof root.elementFromPoint === "function"
-    ? root
-    : element.ownerDocument;
-  var hit = hitTestRoot.elementFromPoint(
-    rect.left + rect.width / 2,
-    rect.top + rect.height / 2,
-  );
+  var rect = element.getBoundingClientRect()
+  var root = element.getRootNode()
+  var hitTestRoot = typeof root.elementFromPoint === 'function' ? root : element.ownerDocument
+  var hit = hitTestRoot.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
   return {
     frameUrl: element.ownerDocument.defaultView?.location?.href,
     rootType: root.constructor?.name,
     tag: element.tagName,
-    role: element.getAttribute("role"),
+    role: element.getAttribute('role'),
     text: element.textContent?.trim().slice(0, 120),
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     hitTag: hit?.tagName,
-    hitClass: typeof hit?.className === "string" ? hit.className : undefined,
-    targetOwnsHit: hit === element || element.contains(hit),
-  };
-});
-targetDiagnostic;
+    hitClass: typeof hit?.className === 'string' ? hit.className : undefined,
+    targetOwnsHit: hit === element || element.contains(hit)
+  }
+})
+targetDiagnostic
 ```
 
 Because `locator.evaluate()` runs in the target's own realm, this single inspection already identifies its frame URL and document-versus-shadow-root context. The agent **MUST NOT** repeat the same failed managed action unchanged or enumerate unrelated frames and roots after this diagnostic. If an unrelated element owns the hit point, wait for or dismiss the blocking UI using managed input. If the target owns the hit point but the managed action still fails, report the controller defect with the diagnostic and screenshot instead of silently forcing the action.
 
 ## Self-Removing Controls And Dismissals
 
-A **dismiss action — clicking an accept/reject/close control — often deletes the very element (and its parent frame or overlay) that was just clicked.** Accepting a cookie banner tears down the CMP iframe; closing a modal removes the dialog. Playwright's `click()` then keeps waiting on a now-gone element and can raise a timeout *even though the click worked*. A timeout after such an action is therefore **not proof of failure**: a click that succeeded might still surface as a timeout.
+A **dismiss action — clicking an accept/reject/close control — often deletes the very element (and its parent frame or overlay) that was just clicked.** Accepting a cookie banner tears down the CMP iframe; closing a modal removes the dialog. Playwright's `click()` then keeps waiting on a now-gone element and can raise a timeout _even though the click worked_. A timeout after such an action is therefore **not proof of failure**: a click that succeeded might still surface as a timeout.
 
 ```js
 // Run the dismiss action in its own js_repl call.
-await stealth.click(page, target.locator, { timeout: 5000 });
+await stealth.click(page, target.locator, { timeout: 5000 })
 ```
 
 Whether the action resolves or reports an error, verify the result in a separate `js_repl` call so an unexpectedly slow inventory cannot keep the action cell running:
 
 ```js
-await page.waitForTimeout(1200);
-var stillThere = await stealth.interactiveElements(page)
-  .then((list) => list.filter((e) => /Einverstanden|Alle akzeptieren/i.test(e.name || "")))
-  .then((hits) => hits.length);
-stillThere === 0;
+await page.waitForTimeout(1200)
+var stillThere = await stealth
+  .interactiveElements(page)
+  .then((list) => list.filter((e) => /Einverstanden|Alle akzeptieren/i.test(e.name || '')))
+  .then((hits) => hits.length)
+stillThere === 0
 ```
 
-After a dismiss click, the agent **must** judge success by the *desired end-state* (the banner gone, the intended page shown), not by whether `click` resolved cleanly. If the click threw but the end-state is already achieved, treat it as success. Do not rerun startup or screenshot repeatedly because the parent node detached.
+After a dismiss click, the agent **must** judge success by the _desired end-state_ (the banner gone, the intended page shown), not by whether `click` resolved cleanly. If the click threw but the end-state is already achieved, treat it as success. Do not rerun startup or screenshot repeatedly because the parent node detached.
 
 Because such controls are often the dismiss button of a frame-hosted banner, diagnosing them follows the same cross-frame rules as `Dynamic And Framed UI`.
 
@@ -418,16 +423,27 @@ Each `js_repl` call has a default duration cap. A timeout ends only the tool cal
 Use the session controller as the default interaction surface, and drive every action from a **controller-produced locator** (from `resolveVisible` or `interactiveElements`) rather than from a raw `page.getByRole(...)` you wrote yourself:
 
 ```js
-var target = await stealth.resolveVisible(page, (frame) => frame.getByRole("button", { name: "Continue", exact: true }));
-await stealth.click(page, target.locator);
-var email = await stealth.resolveVisible(page, (frame) => frame.getByLabel("Email"));
+var target = await stealth.resolveVisible(page, (frame) =>
+  frame.getByRole('button', { name: 'Continue', exact: true })
+)
+await stealth.click(page, target.locator)
+var email = await stealth.resolveVisible(page, (frame) => frame.getByLabel('Email'))
 // Managed typing is cadence-shaped; give this cell enough REPL time.
-await stealth.fill(page, email.locator, "user@example.com");
-await stealth.press(page, "Enter");
-var details = await stealth.resolveVisible(page, (frame) => frame.getByRole("link", { name: "Details" }));
-await stealth.hover(page, details.locator);
-await stealth.check(page, (await stealth.resolveVisible(page, (frame) => frame.getByLabel("Remember me"))).locator);
-await stealth.selectOption(page, (await stealth.resolveVisible(page, (frame) => frame.getByLabel("Country"))).locator, "DE");
+await stealth.fill(page, email.locator, 'user@example.com')
+await stealth.press(page, 'Enter')
+var details = await stealth.resolveVisible(page, (frame) =>
+  frame.getByRole('link', { name: 'Details' })
+)
+await stealth.hover(page, details.locator)
+await stealth.check(
+  page,
+  (await stealth.resolveVisible(page, (frame) => frame.getByLabel('Remember me'))).locator
+)
+await stealth.selectOption(
+  page,
+  (await stealth.resolveVisible(page, (frame) => frame.getByLabel('Country'))).locator,
+  'DE'
+)
 ```
 
 `stealth.*` action methods **MUST** receive a locator produced by `resolveVisible` or `interactiveElements` (which accept a `frame => frame.getByRole(...)` callback and search every current and newly attached frame plus open shadow roots). Pass bare `page.getByRole(...)` or `page.getByLabel(...)` locators to a controller action **only** when you have already confirmed the control is in the main document; never reach for one as the default. A bare `page.getByRole("button", { name: "X" })` resolves only in the main document, so the moment a control sits in a frame or shadow root (a cookie/consent banner, a login iframe, an embedded widget), that locator silently misses it and times out. With the exact name unknown, obtain the locator from the inventory instead:
@@ -446,11 +462,11 @@ Managed mobile mode is a responsive-touch cohort with a 390x844 viewport, matchi
 Desktop and mobile cannot share the session profile concurrently. Only when the user explicitly requests a switch to mobile, close desktop first and then use the existing runtime:
 
 ```js
-await stealth.close();
-var mobileStealth = await ensureMobileBrowser();
-var mobileContext = mobileStealth.context;
-var mobilePage = mobileStealth.pages()[0] || await mobileStealth.newPage();
-({ status: "Managed mobile stealth browser opened", capabilities: mobileStealth.capabilities() });
+await stealth.close()
+var mobileStealth = await ensureMobileBrowser()
+var mobileContext = mobileStealth.context
+var mobilePage = mobileStealth.pages()[0] || (await mobileStealth.newPage())
+;({ status: 'Managed mobile stealth browser opened', capabilities: mobileStealth.capabilities() })
 ```
 
 Use `mobileStealth.tap(mobilePage, locator)` for managed touch input.
@@ -462,7 +478,7 @@ The remaining sections apply to every selected mode unless stated otherwise.
 Reuse the current page across iterations:
 
 ```js
-await page.reload({ waitUntil: "domcontentloaded" });
+await page.reload({ waitUntil: 'domcontentloaded' })
 ```
 
 Do not rerun startup after ordinary application changes. Rerun it only after `js_repl_reset`, kernel termination, or a new OpenCode session.
@@ -485,15 +501,15 @@ Do not rerun startup after ordinary application changes. Rerun it only after `js
 
 ```js
 var screenshotBytes = await page.screenshot({
-  type: "jpeg",
+  type: 'jpeg',
   quality: 85,
-  scale: "css",
-});
+  scale: 'css'
+})
 await opencode.emitImage({
   bytes: screenshotBytes,
-  mimeType: "image/jpeg",
-  filename: "playwright-current.jpg",
-});
+  mimeType: 'image/jpeg',
+  filename: 'playwright-current.jpg'
+})
 ```
 
 Use `appWindow.screenshot()` instead in Electron mode.
@@ -518,11 +534,12 @@ Closing is allowed only when:
 For an explicit close request or a responsive fatal-reset path, close only resources owned by this OpenCode session:
 
 ```js
-if (typeof electronApp !== "undefined") await electronApp.close().catch(() => {});
-if (typeof mobileStealth !== "undefined") await mobileStealth.close().catch(() => {});
-if (typeof stealth !== "undefined") await stealth.close().catch(() => {});
-if (typeof stealth === "undefined" && typeof browser !== "undefined") await browser.close().catch(() => {});
-"Playwright session closed";
+if (typeof electronApp !== 'undefined') await electronApp.close().catch(() => {})
+if (typeof mobileStealth !== 'undefined') await mobileStealth.close().catch(() => {})
+if (typeof stealth !== 'undefined') await stealth.close().catch(() => {})
+if (typeof stealth === 'undefined' && typeof browser !== 'undefined')
+  await browser.close().catch(() => {})
+;('Playwright session closed')
 ```
 
 Wait for `Playwright session closed` before resetting the REPL when cleanup can run. Do not reset after an ordinary explicit close unless the user also requests a new browser. Normal remote-mode close preserves the stealth session profile. `await stealth.resetProfile()` is destructive: it closes the remote session and deletes its complete dedicated identity without relaunching, so use it only when the user explicitly requests a profile reset.
