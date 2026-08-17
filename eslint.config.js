@@ -89,19 +89,22 @@ export default defineConfig([
     }
   },
 
-  // The SDK-linked dependencies must not use caret ranges or dist-tags: npm's
-  // caret semantics on a 0.0.x prerelease accept any prerelease of 0.0.0, and
-  // stale pre-V2 builds (0.0.0-reserved.0, 0.0.0-windows-fix-*) sort above the
-  // whole next stream, so fresh installs silently pick them and the plugin
-  // fails to load. The next-range tracks the "next" dist-tag while excluding
-  // those builds; effect must mirror the SDK's own exact pin.
+  // The SDK-linked dependencies cannot use semver ranges or exact pins:
+  // - carets on a 0.0.x prerelease accept any prerelease of 0.0.0, and stale
+  //   pre-V2 builds (0.0.0-next-2026*, 0.0.0-opentui-*, 0.0.0-otui-diffs-*,
+  //   0.0.0-reserved.0, 0.0.0-windows-fix-*) sort above the whole modern next
+  //   stream, so fresh installs silently pick them and the plugin fails to load.
+  // - the "next" dist-tag is the only unambiguous resolution that tracks
+  //   updates, so no-dist-tag-dependencies is disabled for this file only.
+  // effect stays exact at 4.0.0-beta.101 to mirror the SDK's own pin.
   {
     files: ['package.json'],
     rules: {
       'package-json/dependency-version-range': [
         'error',
         { exceptions: ['@opencode-ai/plugin', '@opencode-ai/schema', 'effect'] }
-      ]
+      ],
+      'package-json/no-dist-tag-dependencies': 'off'
     }
   }
 ])
