@@ -105,10 +105,8 @@ var ensureMobileBrowser = stealthRuntime.ensureMobileBrowser;
 var stealth = await ensureWebBrowser();
 var context = stealth.context;
 var browser = context.browser();
-// Always start from a fresh managed page: the initial about:blank page left
-// by profile launch is occasionally stale or already crashed on some
-// driver/GPU combinations, and using it makes the whole first attempt fail.
-var page = await stealth.newPage();
+// Reuse Camoufox's initial page so startup does not create an extra window.
+var page = stealth.pages()[0] || (await stealth.newPage());
 var stealthCapabilities = stealth.capabilities();
 if (
   stealthCapabilities.managedInput !== true ||
