@@ -1262,7 +1262,7 @@ function createRuntime(deps) {
   const { chromium, browserEngine, opencode, headless, webProfileDir, mobileProfileDir } = deps
   let webSession
   let mobileSession
-  const sessions = { web: () => webSession, mobile: () => mobileSession }
+  const sessions = { desktop: () => webSession, mobile: () => mobileSession }
   const runtimeSessionId = opencode.sessionId
   const controllerRegistry = new Map()
   const controllerLaunches = new Map()
