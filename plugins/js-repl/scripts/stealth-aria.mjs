@@ -52,6 +52,31 @@ function unquoteValue(value) {
   return out
 }
 
+function unwrapYamlKey(body) {
+  if (!body.startsWith("'")) {
+    return body
+  }
+
+  for (let index = 1; index < body.length; index++) {
+    if (body[index] !== "'") {
+      continue
+    }
+
+    if (body[index + 1] === "'") {
+      index++
+      continue
+    }
+
+    if (body[index + 1] !== ':') {
+      return body
+    }
+
+    return body.slice(1, index).replaceAll("''", "'") + body.slice(index + 1)
+  }
+
+  return body
+}
+
 function applyNodeAttr(node, name, value) {
   if (name === 'ref') {
     node.ref = value
@@ -82,13 +107,15 @@ function parseTextNode(body, ctx) {
     return
   }
 
-  const separator = body.indexOf(':')
+  const parsedBody = unwrapYamlKey(body)
+
+  const separator = parsedBody.indexOf(':')
   if (separator <= 0) {
     return
   }
 
-  const kind = body.slice(0, separator)
-  const value = unquoteValue(body.slice(separator + 1).trim())
+  const kind = parsedBody.slice(0, separator)
+  const value = unquoteValue(parsedBody.slice(separator + 1).trim())
   if (kind === '/url') {
     parent.url = value
   } else if (kind === '/placeholder') {
@@ -103,7 +130,9 @@ function parseElementNode(body, depth, ctx, rawLine) {
     ctx.stack.pop()
   }
 
-  const keyMatch = body.match(
+  const parsedBody = unwrapYamlKey(body)
+
+  const keyMatch = parsedBody.match(
     /^(?<role>[\w\-]+)(?:\s+(?<name>"(?:[^"\\]|\\.)*"))?(?<attrs>(?:\s+\[[^\]]*\])*)(?::(?<text>[\s\S]*))?$/v
   )
   if (!keyMatch) {
@@ -141,8 +170,16 @@ function parseAriaSnapshotYaml(yaml) {
   const ctx = { stack: [], nodes: [] }
   for (const rawLine of yaml.split(/\r?\n/v)) {
     const trimmed = rawLine.trim()
-    if (!trimmed || !trimmed.startsWith('- ')) {
+    if (!trimmed) {
       continue
+    }
+
+    if (!trimmed.startsWith('- ')) {
+      throw new TypeError('Unrecognized aria snapshot line: ' + rawLine)
+    }
+
+    if ((rawLine.length - rawLine.trimStart().length) % 2 !== 0) {
+      throw new TypeError('Invalid aria snapshot indentation: ' + rawLine)
     }
 
     const depth = (rawLine.length - rawLine.trimStart().length) / 2
