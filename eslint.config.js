@@ -87,5 +87,21 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser
     }
+  },
+
+  // The SDK-linked dependencies must not use caret ranges or dist-tags: npm's
+  // caret semantics on a 0.0.x prerelease accept any prerelease of 0.0.0, and
+  // stale pre-V2 builds (0.0.0-reserved.0, 0.0.0-windows-fix-*) sort above the
+  // whole next stream, so fresh installs silently pick them and the plugin
+  // fails to load. The next-range tracks the "next" dist-tag while excluding
+  // those builds; effect must mirror the SDK's own exact pin.
+  {
+    files: ['package.json'],
+    rules: {
+      'package-json/dependency-version-range': [
+        'error',
+        { exceptions: ['@opencode-ai/plugin', '@opencode-ai/schema', 'effect'] }
+      ]
+    }
   }
 ])
