@@ -1,0 +1,8 @@
+{
+  "entry": [
+    "plugins/js-repl/scripts/stealth-runtime.mjs",
+    "plugins/js-repl/scripts/stealth-profile-store.mjs",
+    "plugins/js-repl/scripts/stealth-utils.mjs"
+  ],
+  "project": ["plugins/**/*.{ts,mjs}"]
+}

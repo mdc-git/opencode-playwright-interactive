@@ -7,6 +7,7 @@ This project targets OpenCode V2 and its V2 plugin, tool, skill, permission,
 and Code Mode APIs. It is not a V1 plugin.
 
 <!-- markdownlint-disable-next-line MD033 -->
+
 <video controls src="https://github.com/user-attachments/assets/b015fe51-692f-475b-a8ac-a772695db35e"></video>
 
 ## Why use it
@@ -75,9 +76,7 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "permissions": [
-    { "action": "js_repl", "resource": "*", "effect": "ask" }
-  ],
+  "permissions": [{ "action": "js_repl", "resource": "*", "effect": "ask" }],
   "plugins": [
     {
       "package": "opencode-playwright-interactive@git+https://github.com/mdc-git/opencode-playwright-interactive.git",
@@ -160,20 +159,20 @@ that installation.
 
 ## Runtime behavior
 
-| Property | Behavior |
-| --- | --- |
-| Session isolation | Each OpenCode session has its own Node.js kernel and scratch directory. |
-| Persistence | JavaScript state, loaded modules, browser pages, and Electron windows survive between turns. |
-| Package resolution | Node.js built-ins, workspace packages, local ESM files, and configured module roots are available. |
-| Browser cache | Playwright and Chromium are shared under `~/.cache/opencode/playwright` by default. |
-| Text output | Limited to 1 MiB per execution. |
-| Images | Up to four PNG, JPEG, WebP, or GIF images, limited to 5 MiB each. |
-| Operation timeout | Configurable from 1 ms to 300000 ms; the default is 30000 ms. |
-| Rejected promises | A rejected final expression or detached rejection fails the relevant call without resetting the kernel. A late background rejection is reported before the next cell executes. |
-| Timed-out work | May continue in the session kernel until that kernel is reset. |
-| TUI lifecycle | Closing the TUI does not necessarily stop the background service, kernel, or browser. |
-| Plugin cleanup | Reloading, disabling, or stopping the plugin closes its kernels and browser resources. |
-| Forced-exit cleanup | Orphaned scratch directories are removed during a later service start. |
+| Property            | Behavior                                                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Session isolation   | Each OpenCode session has its own Node.js kernel and scratch directory.                                                                                                        |
+| Persistence         | JavaScript state, loaded modules, browser pages, and Electron windows survive between turns.                                                                                   |
+| Package resolution  | Node.js built-ins, workspace packages, local ESM files, and configured module roots are available.                                                                             |
+| Browser cache       | Playwright and Chromium are shared under `~/.cache/opencode/playwright` by default.                                                                                            |
+| Text output         | Limited to 1 MiB per execution.                                                                                                                                                |
+| Images              | Up to four PNG, JPEG, WebP, or GIF images, limited to 5 MiB each.                                                                                                              |
+| Operation timeout   | Configurable from 1 ms to 300000 ms; the default is 30000 ms.                                                                                                                  |
+| Rejected promises   | A rejected final expression or detached rejection fails the relevant call without resetting the kernel. A late background rejection is reported before the next cell executes. |
+| Timed-out work      | May continue in the session kernel until that kernel is reset.                                                                                                                 |
+| TUI lifecycle       | Closing the TUI does not necessarily stop the background service, kernel, or browser.                                                                                          |
+| Plugin cleanup      | Reloading, disabling, or stopping the plugin closes its kernels and browser resources.                                                                                         |
+| Forced-exit cleanup | Orphaned scratch directories are removed during a later service start.                                                                                                         |
 
 Interactive browser sessions remain open after a task so the visible result can
 be inspected and later turns can continue from the same state. Different
