@@ -36,8 +36,7 @@ const defaults = {
   fittsIntercept: 90,
   fittsSlope: 110,
   fittsMinDuration: 60,
-  fittsMaxDuration: 900,
-  typoRate: 0.02
+  fittsMaxDuration: 900
 }
 
 const number = (value, fallback, minimum, maximum) => {
@@ -75,7 +74,6 @@ export const normalizeBehavior = (value) => {
   profile.fittsSlope = number(value.fittsSlope, profile.fittsSlope, 40, 250)
   profile.fittsMinDuration = number(value.fittsMinDuration, profile.fittsMinDuration, 30, 200)
   profile.fittsMaxDuration = number(value.fittsMaxDuration, profile.fittsMaxDuration, 300, 2500)
-  profile.typoRate = number(value.typoRate, profile.typoRate, 0, 0.08)
   if (profile.fittsMaxDuration < profile.fittsMinDuration) {
     profile.fittsMaxDuration = profile.fittsMinDuration + 1
   }
@@ -111,8 +109,7 @@ export const createBehavior = () =>
     fittsIntercept: uniform(80, 110),
     fittsSlope: uniform(95, 135),
     fittsMinDuration: uniform(45, 75),
-    fittsMaxDuration: uniform(700, 1200),
-    typoRate: uniform(0.008, 0.035)
+    fittsMaxDuration: uniform(700, 1200)
   })
 
 const locale = () => {
