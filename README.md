@@ -179,6 +179,13 @@ be inspected and later turns can continue from the same state. Different
 OpenCode sessions do not share kernels, browser bindings, or temporary remote
 profiles.
 
+Persistent browser profiles are opt-in. When a user explicitly supplies a
+directory and asks to reuse it, the Playwright skill passes that exact
+directory to the selected browser startup. Without an explicit directory,
+local sessions use an ephemeral context and remote sessions use their
+session-scoped managed profile. Browser profile directories are exclusive while
+in use; never delete lock files or profile data to work around a lock.
+
 ## Security
 
 The persistent JavaScript runtime is trusted local code, not a sandbox. Code
