@@ -131,36 +131,6 @@ export const digraphFactor = (previous, current) => {
   return 1
 }
 
-// QWERTY adjacency used for realistic substitution typos.
-export const KEY_NEIGHBORHOOD = {
-  q: 'was',
-  w: 'qeasd',
-  e: 'wrsdf',
-  r: 'etdfg',
-  t: 'ryfgh',
-  y: 'tughj',
-  u: 'yihjk',
-  i: 'uojkl',
-  o: 'ipkl',
-  p: 'ol',
-  a: 'qwsz',
-  s: 'awedzx',
-  d: 'serfcx',
-  f: 'drtgvc',
-  g: 'ftyhvb',
-  h: 'gyujnb',
-  j: 'huikmn',
-  k: 'jiolm',
-  l: 'kop',
-  z: 'asx',
-  x: 'zsdc',
-  c: 'xdfv',
-  v: 'cfgb',
-  b: 'vghn',
-  n: 'bhjm',
-  m: 'njk'
-}
-
 export const pathBetween = (from, to, profile) => {
   const dx = to.x - from.x
   const dy = to.y - from.y

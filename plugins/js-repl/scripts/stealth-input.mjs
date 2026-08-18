@@ -1,6 +1,5 @@
 import {
   FALLBACK_VIEWPORT,
-  KEY_NEIGHBORHOOD,
   STRUCTURAL_ROLES,
   clamp,
   digraphFactor,
@@ -206,31 +205,7 @@ function createTypingHelpers(profile) {
     }
   }
 
-  const typeTypo = async (currentPage, character) => {
-    const neighbor = KEY_NEIGHBORHOOD[character.toLowerCase()]
-    if (!neighbor) {
-      return false
-    }
-
-    await pressKey(currentPage, neighbor[Math.floor(Math.random() * neighbor.length)])
-    await sleep(logNormal(profile.typingMean, profile.typingSigma))
-    await sleep(logNormal(280, 0.3))
-    await currentPage.keyboard.press('Backspace', {
-      delay: uniform(profile.keyHoldMin, profile.keyHoldMax)
-    })
-    await sleep(logNormal(240, 0.3))
-    return true
-  }
-
   const typeCharacter = async (currentPage, character, previous) => {
-    const isLikelyTypo =
-      typeof character === 'string' &&
-      /^[a-z]$/iv.test(character) &&
-      Math.random() < profile.typoRate
-    if (isLikelyTypo && (await typeTypo(currentPage, character))) {
-      return { previous: '' }
-    }
-
     if (/^[\p{Letter}\p{Number}\p{Punctuation}\p{Space_Separator}\p{Symbol}]$/v.test(character)) {
       await pressKey(currentPage, character)
     } else {
