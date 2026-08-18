@@ -58,8 +58,17 @@ return await tools.js_repl({
   code: `var playwright = await import("playwright");
 var chromium = playwright.chromium;
 var HEADLESS = false;
-var browser = await chromium.launch({ headless: HEADLESS });
-var context = await browser.newContext();
+// Set only when the user explicitly provides a profile directory.
+var PERSISTENT_PROFILE_DIR = undefined;
+var browser;
+var context;
+if (PERSISTENT_PROFILE_DIR) {
+  context = await chromium.launchPersistentContext(PERSISTENT_PROFILE_DIR, { headless: HEADLESS });
+  browser = context.browser();
+} else {
+  browser = await chromium.launch({ headless: HEADLESS });
+  context = await browser.newContext();
+}
 var page = await context.newPage();
 var localBrowserSession = opencode.bindBrowser({ browser, context, profileKind: "local" });
 var localBrowserBinding = localBrowserSession.binding;
@@ -91,6 +100,8 @@ var path = await import("node:path");
 var fs = await import("node:fs/promises");
 var { pathToFileURL } = await import("node:url");
 var HEADLESS = false;
+// Set only when the user explicitly provides a profile directory.
+var PERSISTENT_PROFILE_DIR = undefined;
 var stealthRuntimePath = path.join(opencode.scriptDir, "stealth-runtime.mjs");
 await fs.access(stealthRuntimePath);
 var { installStealthRuntime } = await import(pathToFileURL(stealthRuntimePath).href);
@@ -99,6 +110,7 @@ var stealthRuntime = await installStealthRuntime({
   browserEngine: "camoufox",
   opencode,
   headless: HEADLESS,
+  webProfileDir: PERSISTENT_PROFILE_DIR,
 });
 var ensureWebBrowser = stealthRuntime.ensureWebBrowser;
 var ensureMobileBrowser = stealthRuntime.ensureMobileBrowser;
@@ -138,7 +150,22 @@ For managed remote startup, set `HEADLESS = true` only when the environment has 
 - Do not use any `stealth`, `mobileStealth`, `ensureWebBrowser`, or `ensureMobileBrowser` APIs.
 - Before every local-mode `tools.js_repl` call, inspect its `code` payload. If it contains a stealth-runtime identifier such as `stealth`, `mobileStealth`, `interactiveElements`, or `resolveVisible`, do not execute it; replace it with the ordinary Playwright equivalent.
 - For mobile-sized local QA, create a normal context with the required viewport and touch options rather than using the stealth mobile controller.
-- Never use a personal browser profile.
+- Never use a personal browser profile unless the user explicitly supplies its
+  directory and asks for it to be reused.
+
+### Explicit Persistent Profiles
+
+Browser profile persistence is opt-in. If the user explicitly asks to reuse a
+profile and supplies a directory, set `PERSISTENT_PROFILE_DIR` to that exact
+directory in the selected startup block. Do not infer, choose, or reuse a
+profile directory when the user has not supplied one.
+
+- Local web uses Chromium's `launchPersistentContext()` with the supplied directory.
+- Remote web passes the supplied directory through the managed Camoufox runtime.
+- The directory is exclusive while its browser is running; report the profile-lock error and ask the user to close the other browser rather than deleting lock files or profile data.
+- Do not combine a supplied profile directory with a different startup mode or silently fall back to an ephemeral profile.
+- A supplied profile can contain cookies, credentials, history, and other sensitive state. Use it only for the user's explicit request and do not expose its contents.
+- When no directory is supplied, retain the normal ephemeral local context or session-scoped managed remote profile.
 
 ## Managed Remote Web Rules
 

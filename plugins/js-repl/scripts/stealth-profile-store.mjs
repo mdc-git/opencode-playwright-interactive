@@ -199,13 +199,14 @@ export const normalizeMetadata = (value) =>
     : undefined
 
 const resolvePaths = (baseDir, { dataDir } = {}) => {
+  const isExplicitDataDir = Boolean(dataDir)
   const root = path.resolve(dataDir || path.join(baseDir, 'stealth'))
   return {
     root,
     behaviorProfile: path.join(root, 'behavior.json'),
     persona: path.join(root, 'persona.json'),
     identityMetadata: path.join(root, 'profile.json'),
-    userData: path.join(root, 'user-data')
+    userData: isExplicitDataDir ? root : path.join(root, 'user-data')
   }
 }
 
