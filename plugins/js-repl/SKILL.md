@@ -19,30 +19,35 @@ Run setup first:
 return await tools.js_repl_playwright_setup({})
 ```
 
+### REQUIRED: Direct REPL Routing
+
+After setup, the agent **MUST** send each browser REPL cell as plain JavaScript directly in the `execute` tool's `code` input. It **MUST NOT** wrap browser code in a nested `tools.js_repl(...)` call. The plugin safely routes the first cell containing `import(...)` or `require(...)` to `js_repl` and keeps routing later plain JavaScript cells in that session to the same persistent kernel.
+
+`js_repl_playwright_setup` and `js_repl_reset` remain explicit Code Mode tool calls. Browser startup, inspection and interaction cells do not.
+
+This avoids nesting JavaScript source inside another template literal. If `execute` reports `Failed to parse TypeScript`, the cell did not reach `js_repl`; correct the outer JavaScript syntax and retry the same small cell without resetting the kernel.
+
 Select exactly one startup mode. A local URL uses standard Chromium, a remote URL uses Camoufox, and Electron uses its own launcher. Do not navigate during startup.
 
 ### Local Web
 
 ```js
-return await tools.js_repl({
-  code: `var playwright = await import("playwright");
-var chromium = playwright.chromium;
-var HEADLESS = false;
+var playwright = await import('playwright')
+var chromium = playwright.chromium
+var HEADLESS = false
 // Set only when the user explicitly supplies a profile directory.
-var PERSISTENT_PROFILE_DIR = undefined;
-var browser;
-var context;
+var PERSISTENT_PROFILE_DIR = undefined
+var browser
+var context
 if (PERSISTENT_PROFILE_DIR) {
-  context = await chromium.launchPersistentContext(PERSISTENT_PROFILE_DIR, { headless: HEADLESS });
-  browser = context.browser();
+  context = await chromium.launchPersistentContext(PERSISTENT_PROFILE_DIR, { headless: HEADLESS })
+  browser = context.browser()
 } else {
-  browser = await chromium.launch({ headless: HEADLESS });
-  context = await browser.newContext();
+  browser = await chromium.launch({ headless: HEADLESS })
+  context = await browser.newContext()
 }
-var page = context.pages()[0] || (await context.newPage());
-({ status: "Standard Chromium opened", persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) });`,
-  timeout_ms: 30000
-})
+var page = context.pages()[0] || (await context.newPage())
+;({ status: 'Standard Chromium opened', persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) })
 ```
 
 Local web uses normal Playwright input. Do not load the humanized input module.
@@ -50,34 +55,31 @@ Local web uses normal Playwright input. Do not load the humanized input module.
 ### Remote Web
 
 ```js
-return await tools.js_repl({
-  code: `var core = await import("playwright-core");
-var { launchOptions } = await import("camoufox-js");
-var path = await import("node:path");
-var { pathToFileURL } = await import("node:url");
-var HEADLESS = false;
+var core = await import('playwright-core')
+var { launchOptions } = await import('camoufox-js')
+var path = await import('node:path')
+var { pathToFileURL } = await import('node:url')
+var HEADLESS = false
 // Set only when the user explicitly supplies a profile directory.
-var PERSISTENT_PROFILE_DIR = undefined;
-var camoufoxOptions = await launchOptions({ enable_cache: true });
-var browser;
-var context;
+var PERSISTENT_PROFILE_DIR = undefined
+var camoufoxOptions = await launchOptions({ enable_cache: true })
+var browser
+var context
 if (PERSISTENT_PROFILE_DIR) {
   context = await core.firefox.launchPersistentContext(PERSISTENT_PROFILE_DIR, {
     ...camoufoxOptions,
-    headless: HEADLESS,
-  });
-  browser = context.browser();
+    headless: HEADLESS
+  })
+  browser = context.browser()
 } else {
-  browser = await core.firefox.launch({ ...camoufoxOptions, headless: HEADLESS });
-  context = await browser.newContext();
+  browser = await core.firefox.launch({ ...camoufoxOptions, headless: HEADLESS })
+  context = await browser.newContext()
 }
-var page = context.pages()[0] || (await context.newPage());
-var humanizedInputPath = path.join(opencode.scriptDir, "humanized-input.mjs");
-var { createHumanizedInput } = await import(pathToFileURL(humanizedInputPath).href);
-var input = createHumanizedInput();
-({ status: "Camoufox opened", persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) });`,
-  timeout_ms: 30000
-})
+var page = context.pages()[0] || (await context.newPage())
+var humanizedInputPath = path.join(opencode.scriptDir, 'humanized-input.mjs')
+var { createHumanizedInput } = await import(pathToFileURL(humanizedInputPath).href)
+var input = createHumanizedInput()
+;({ status: 'Camoufox opened', persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) })
 ```
 
 Camoufox supplies the browser-level anti-detection behavior. `input` supplies only humanized input. Playwright owns browser and context lifecycle, pages, tabs, popups, navigation, locators, frames, shadow DOM, waiting, screenshots, and assertions.
@@ -85,16 +87,13 @@ Camoufox supplies the browser-level anti-detection behavior. `input` supplies on
 ### Electron
 
 ```js
-return await tools.js_repl({
-  code: `var playwright = await import("playwright");
-var electronLauncher = playwright._electron;
-var ELECTRON_ENTRY = ".";
-var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] });
-var appWindow = await electronApp.firstWindow();
-appWindow.setDefaultTimeout(10000);
-({ status: "Loaded Electron window", title: await appWindow.title() });`,
-  timeout_ms: 30000
-})
+var playwright = await import('playwright')
+var electronLauncher = playwright._electron
+var ELECTRON_ENTRY = '.'
+var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] })
+var appWindow = await electronApp.firstWindow()
+appWindow.setDefaultTimeout(10000)
+;({ status: 'Loaded Electron window', title: await appWindow.title() })
 ```
 
 Electron uses normal Playwright input and never loads humanized web input.
