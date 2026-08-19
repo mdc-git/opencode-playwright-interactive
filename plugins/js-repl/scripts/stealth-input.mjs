@@ -94,6 +94,7 @@ async function findClickablePoints(currentPage, target) {
       const root = element.getRootNode()
       const hitTestRoot = typeof root.elementFromPoint === 'function' ? root : element.ownerDocument
       const targetLink = element.closest?.('a[href]')
+      const labels = element.labels ? Array.from(element.labels) : []
       return points.filter((point) => {
         const offsetX = rect.width * point.x
         const offsetY = rect.height * point.y
@@ -103,6 +104,11 @@ async function findClickablePoints(currentPage, target) {
         }
 
         if (top === element || element.contains(top)) {
+          return true
+        }
+
+        // Native controls are commonly covered by their associated label.
+        if (labels.some((label) => top === label || label.contains(top))) {
           return true
         }
 
