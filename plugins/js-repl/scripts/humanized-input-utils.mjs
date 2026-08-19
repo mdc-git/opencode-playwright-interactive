@@ -194,13 +194,6 @@ const clickCoordinate = (size, origin, precision) => {
 
 export const pointFor = (box, profile) => {
   const targetSize = Math.max(box.width, box.height)
-  if (box.stealthPoints?.length) {
-    return {
-      ...box.stealthPoints[Math.floor(Math.random() * box.stealthPoints.length)],
-      targetSize
-    }
-  }
-
   return {
     x: box.width <= 1 ? box.x : clickCoordinate(box.width, box.x, profile.clickPrecision),
     y: box.height <= 1 ? box.y : clickCoordinate(box.height, box.y, profile.clickPrecision),

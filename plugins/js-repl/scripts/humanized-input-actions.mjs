@@ -4,7 +4,6 @@ import {
   digraphFactor,
   fittsDuration,
   logNormal,
-  normal,
   pathBetween,
   pointFor,
   sleep,
@@ -39,80 +38,17 @@ async function targetBox(currentPage, target) {
     await target.scrollIntoViewIfNeeded()
     const box = await target.boundingBox()
     if (!box || box.width <= 0 || box.height <= 0) {
-      throw new Error('Stealth target is not visible')
+      throw new Error('Humanized input target is not visible')
     }
 
-    const clickable = await findClickablePoints(currentPage, target)
-    if (clickable.length === 0) {
-      throw new Error('Stealth target is obscured')
-    }
-
-    return {
-      ...box,
-      stealthPoints: stealthPointsFor(box, clickable)
-    }
+    return box
   }
 
   if (target && Number.isFinite(target.x) && Number.isFinite(target.y)) {
     return { x: target.x, y: target.y, width: 1, height: 1 }
   }
 
-  throw new TypeError('Stealth target must be a Locator or { x, y }')
-}
-
-function stealthCandidatePoints() {
-  const jitter = () => normal() * 0.2
-  return [
-    { x: 0.5, y: 0.5 },
-    { x: 0.25, y: 0.5 },
-    { x: 0.75, y: 0.5 },
-    { x: 0.5, y: 0.25 },
-    { x: 0.5, y: 0.75 },
-    ...Array.from({ length: 12 }, () => ({
-      x: clamp(0.5 + jitter(), 0.1, 0.9),
-      y: clamp(0.5 + jitter(), 0.1, 0.9)
-    }))
-  ]
-}
-
-async function findClickablePoints(currentPage, target) {
-  return target
-    .evaluate((element, points) => {
-      const rect = element.getBoundingClientRect()
-      const root = element.getRootNode()
-      const hitTestRoot = typeof root.elementFromPoint === 'function' ? root : element.ownerDocument
-      const targetLink = element.closest?.('a[href]')
-      const labels = element.labels ? [...element.labels] : []
-      return points.filter((point) => {
-        const offsetX = rect.width * point.x
-        const offsetY = rect.height * point.y
-        const top = hitTestRoot.elementFromPoint(rect.left + offsetX, rect.top + offsetY)
-        if (!top) {
-          return false
-        }
-
-        if (top === element || element.contains(top)) {
-          return true
-        }
-
-        // Native controls are commonly covered by their associated label.
-        if (labels.some((label) => top === label || label.contains(top))) {
-          return true
-        }
-
-        const topLink = top.closest?.('a[href]')
-        return Boolean(targetLink && topLink && targetLink.href === topLink.href)
-      })
-    }, stealthCandidatePoints())
-    .catch(() => [])
-}
-
-function stealthPointsFor(box, clickable) {
-  return clickable.map((point) => {
-    const offsetX = box.width * point.x
-    const offsetY = box.height * point.y
-    return { x: box.x + offsetX, y: box.y + offsetY }
-  })
+  throw new TypeError('Humanized input target must be a Locator or { x, y }')
 }
 
 function computeEasing(duration, index, total, elapsed) {
@@ -232,6 +168,49 @@ function performClickGesture({ currentPage, state, point, button, count, profile
   )
 }
 
+async function associatedLabelOwnsPoint(target, point, box) {
+  return target.evaluate(
+    (element, offset) => {
+      const root = element.getRootNode()
+      const hitTestRoot = typeof root.elementFromPoint === 'function' ? root : element.ownerDocument
+      const rect = element.getBoundingClientRect()
+      const top = hitTestRoot.elementFromPoint(rect.left + offset.x, rect.top + offset.y)
+      const labels = element.labels ? [...element.labels] : []
+      return labels.some((label) => top === label || label.contains(top))
+    },
+    { x: point.x - box.x, y: point.y - box.y }
+  )
+}
+
+async function verifyClickTarget({ target, point, box, modifiers, button, timeout }) {
+  if (typeof target.click !== 'function') {
+    return point
+  }
+
+  if (await associatedLabelOwnsPoint(target, point, box)) {
+    return point
+  }
+
+  const position = { x: point.x - box.x, y: point.y - box.y }
+  await target.click({
+    trial: true,
+    position,
+    modifiers,
+    button,
+    timeout
+  })
+  const refreshedBox = await target.boundingBox()
+  if (!refreshedBox) {
+    throw new Error('Humanized input target is no longer visible after Playwright validation')
+  }
+
+  return {
+    x: refreshedBox.x + position.x,
+    y: refreshedBox.y + position.y,
+    targetSize: Math.max(refreshedBox.width, refreshedBox.height)
+  }
+}
+
 function createInputHelpers(profile, requirePage, moveToPoint) {
   const { pressKey, typeCharacter } = createTypingHelpers(profile)
   const withModifiers = async (currentPage, modifiers, action) => {
@@ -251,7 +230,7 @@ function createInputHelpers(profile, requirePage, moveToPoint) {
 
   const typeText = async (currentPage, text) => {
     if (typeof text !== 'string') {
-      throw new TypeError('Stealth text input requires a string')
+      throw new TypeError('Humanized text input requires a string')
     }
 
     if (text.length === 0) {
@@ -270,13 +249,23 @@ function createInputHelpers(profile, requirePage, moveToPoint) {
     currentPage,
     state,
     target,
-    { modifiers, button, count = 1 } = {}
+    { modifiers, button, count = 1, timeout } = {}
   ) => {
     const box = await targetBox(currentPage, target)
     const point = pointFor(box, profile)
     await sleep(Math.min(1200, logNormal(profile.actionGapMean, profile.actionGapSigma)))
+    await moveToPoint(currentPage, state, point)
+    const clickPoint = await verifyClickTarget({ target, point, box, modifiers, button, timeout })
     await withModifiers(currentPage, modifiers, () =>
-      performClickGesture({ currentPage, state, point, button, count, profile, moveToPoint })
+      performClickGesture({
+        currentPage,
+        state,
+        point: clickPoint,
+        button,
+        count,
+        profile,
+        moveToPoint
+      })
     )
   }
 
