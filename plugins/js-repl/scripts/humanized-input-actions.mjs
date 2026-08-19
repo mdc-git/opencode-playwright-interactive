@@ -32,11 +32,11 @@ async function validateTarget(target, currentPage) {
   }
 }
 
-async function targetBox(currentPage, target) {
+async function targetBox(currentPage, target, timeout) {
   if (target && typeof target.boundingBox === 'function') {
     await validateTarget(target, currentPage)
-    await target.scrollIntoViewIfNeeded()
-    const box = await target.boundingBox()
+    await target.scrollIntoViewIfNeeded({ timeout })
+    const box = await target.boundingBox({ timeout })
     if (!box || box.width <= 0 || box.height <= 0) {
       throw new Error('Humanized input target is not visible')
     }
@@ -168,45 +168,74 @@ function performClickGesture({ currentPage, state, point, button, count, profile
   )
 }
 
-async function associatedLabelOwnsPoint(target, point, box) {
-  return target.evaluate(
-    (element, offset) => {
-      const root = element.getRootNode()
-      const hitTestRoot = typeof root.elementFromPoint === 'function' ? root : element.ownerDocument
-      const rect = element.getBoundingClientRect()
-      const top = hitTestRoot.elementFromPoint(rect.left + offset.x, rect.top + offset.y)
-      const labels = element.labels ? [...element.labels] : []
-      return labels.some((label) => top === label || label.contains(top))
-    },
-    { x: point.x - box.x, y: point.y - box.y }
-  )
+async function hitTestCandidates(target, candidates) {
+  return target.evaluate((element, points) => {
+    const root = element.getRootNode()
+    const hitTestRoot = typeof root.elementFromPoint === 'function' ? root : element.ownerDocument
+    const rect = element.getBoundingClientRect()
+    const labels = element.labels ? [...element.labels] : []
+    return points.find((candidate) => {
+      const offsetX = rect.width * candidate.x
+      const offsetY = rect.height * candidate.y
+      const top = hitTestRoot.elementFromPoint(rect.left + offsetX, rect.top + offsetY)
+      return (
+        top === element ||
+        element.contains(top) ||
+        labels.some((label) => top === label || label.contains(top))
+      )
+    })
+  }, candidates)
 }
 
-async function verifyClickTarget({ target, point, box, modifiers, button, timeout }) {
-  if (typeof target.click !== 'function') {
-    return point
+async function clickablePoint(target, point, box) {
+  const preferred = {
+    x: clamp((point.x - box.x) / box.width, 0, 1),
+    y: clamp((point.y - box.y) / box.height, 0, 1)
+  }
+  const candidates = [
+    preferred,
+    { x: 0.5, y: 0.5 },
+    { x: 0.25, y: 0.5 },
+    { x: 0.75, y: 0.5 },
+    { x: 0.5, y: 0.25 },
+    { x: 0.5, y: 0.75 }
+  ]
+  const hitTest = () => hitTestCandidates(target, candidates)
+  const alignments = ['start', 'end']
+  const findAlignedPoint = async (index = 0) => {
+    const offset = await hitTest()
+    if (offset) {
+      return offset
+    }
+
+    const block = alignments[index]
+    if (!block) {
+      return undefined
+    }
+
+    await target.evaluate(
+      (element, alignment) =>
+        element.scrollIntoView({ behavior: 'instant', block: alignment, inline: 'nearest' }),
+      block
+    )
+    return findAlignedPoint(index + 1)
   }
 
-  if (await associatedLabelOwnsPoint(target, point, box)) {
-    return point
+  const offset = await findAlignedPoint()
+  if (!offset) {
+    throw new Error('Humanized input target is obscured')
   }
 
-  const position = { x: point.x - box.x, y: point.y - box.y }
-  await target.click({
-    trial: true,
-    position,
-    modifiers,
-    button,
-    timeout
-  })
   const refreshedBox = await target.boundingBox()
   if (!refreshedBox) {
-    throw new Error('Humanized input target is no longer visible after Playwright validation')
+    throw new Error('Humanized input target is no longer visible after hit testing')
   }
 
+  const offsetX = refreshedBox.width * offset.x
+  const offsetY = refreshedBox.height * offset.y
   return {
-    x: refreshedBox.x + position.x,
-    y: refreshedBox.y + position.y,
+    x: refreshedBox.x + offsetX,
+    y: refreshedBox.y + offsetY,
     targetSize: Math.max(refreshedBox.width, refreshedBox.height)
   }
 }
@@ -251,11 +280,11 @@ function createInputHelpers(profile, requirePage, moveToPoint) {
     target,
     { modifiers, button, count = 1, timeout } = {}
   ) => {
-    const box = await targetBox(currentPage, target)
+    const box = await targetBox(currentPage, target, timeout)
     const point = pointFor(box, profile)
     await sleep(Math.min(1200, logNormal(profile.actionGapMean, profile.actionGapSigma)))
     await moveToPoint(currentPage, state, point)
-    const clickPoint = await verifyClickTarget({ target, point, box, modifiers, button, timeout })
+    const clickPoint = await clickablePoint(target, point, box)
     await withModifiers(currentPage, modifiers, () =>
       performClickGesture({
         currentPage,
