@@ -144,6 +144,18 @@ if (openedPages.length === 1) page = openedPages[0]
 
 Do not assume the outcome.
 
+## Proof Gate Before Automation
+
+Do not write or execute a large multi-step script, loop, helper or batch of interactions based on untested assumptions about selectors, page state or transitions. Before automating a flow, use the persistent REPL to complete the proposed flow successfully at least once as small, sequential Playwright operations.
+
+For the proving pass, inspect the current state, choose the next locator, perform one interaction, and verify its expected visible result before continuing. A locator resolving successfully is not proof that the interaction or transition works. Do not bundle an unproven next step into the same call.
+
+Only after the complete representative sequence has worked once may the agent consolidate those exact proven steps into a larger script or repeated automation. If the UI, navigation outcome, popup behavior or other assumption differs from the proving pass, stop the automation at that divergence and prove the changed path one step at a time before updating the script.
+
+Do not preemptively build fallback trees, speculative selector lists, retry loops or broad DOM-evaluation scripts to cover states that have not been observed. Inspect the actual state first.
+
+The required startup block, read-only inspection and a single isolated interaction are not automation and do not require a prior proving pass. Irreversible or externally consequential actions must remain incremental; do not repeat them merely to prove that a consolidated script can replay them.
+
 ## Humanized Input
 
 For remote web, pass ordinary Playwright locators directly to `input`:
