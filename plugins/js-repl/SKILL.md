@@ -178,7 +178,19 @@ Navigate to the user-requested origin and reach later states through visible UI 
 
 Before interacting, check whether the requested information is already present in the DOM. If it is, read it without unnecessary input. When the current state or target is unclear, inspect a screenshot instead of guessing selectors.
 
-After the first remote navigation, wait briefly for delayed consent or modal UI. Inspect the page and relevant frames with normal Playwright locators plus a screenshot. Use humanized input to accept or dismiss visible overlays.
+## Remote Interruptions
+
+After the first remote navigation, wait briefly for delayed consent or modal UI. Interruptions can also appear later, so reassess whenever the visible state changes unexpectedly or a planned action is blocked.
+
+Inspect the current page, relevant frames, open shadow roots and `context.pages()` with normal Playwright APIs. Use a screenshot whenever DOM inspection does not make the visible interruption and its controls unambiguous.
+
+When a cookie or consent prompt appears, choose the visible affirmative option whose meaning is to accept or allow all cookie categories. Its wording and language vary by site; identify it by meaning rather than relying on a fixed label such as `Accept all`. Do not choose a narrower, rejecting or settings option unless the user asks.
+
+Dismiss unrelated, benign interruptions when a safe visible control exists. This includes newsletter prompts, surveys, promotional modals, chat invitations, interstitials and unrelated popup pages. Controls may be expressed as close, dismiss, cancel, skip, continue without, not now or an equivalent phrase in another language. Use normal Playwright locators to identify the control and humanized input to activate it. Close an unrelated popup page with Playwright only after confirming it is not part of the requested flow.
+
+Do not automatically dismiss anything that may be relevant to the task, including authentication, permission decisions, destructive confirmations, validation errors, checkout or submission confirmation, file choosers, or dialogs whose consequence is unclear. Inspect or ask instead of guessing.
+
+After accepting or dismissing an interruption, verify in a separate inspection that it is gone and that the intended workflow page remains active. A timed-out dismissal click can still have succeeded when the control removed itself; judge the result by this verified end state rather than retrying blindly.
 
 ## Session Persistence
 
