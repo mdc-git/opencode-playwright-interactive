@@ -9,6 +9,8 @@ Use persistent `js_repl` Playwright handles for browser and Electron QA.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **MAY**, and **OPTIONAL** in this skill are to be interpreted as described in RFC 2119.
 
+Sections marked **CRITICAL** are mandatory execution gates. They are not recommendations. If a CRITICAL gate is skipped or violated, the agent **MUST** stop the browser task, return to the unmet gate, and complete it before continuing. Work performed beyond a skipped gate **MUST NOT** be treated as valid verification.
+
 ## Startup
 
 Run setup first:
@@ -146,9 +148,9 @@ if (openedPages.length === 1) page = openedPages[0]
 
 Do not assume the outcome.
 
-## Mandatory Remote Cleanup Gate
+## CRITICAL: Mandatory Remote Cleanup Gate
 
-This gate **MUST** be the first activity after the first navigation to each remote origin. Before extracting task content, starting the requested workflow, performing the proving pass, or reporting any result, the agent **MUST** complete all of these steps in order:
+**CRITICAL:** This mandatory gate **MUST** be the first activity after the first navigation to each remote origin. Before extracting task content, starting the requested workflow, performing the proving pass, or reporting any result, the agent **MUST** complete all of these steps in order:
 
 1. The agent **MUST** wait roughly 1–2 seconds for delayed consent managers, overlays and popup pages to appear.
 2. The agent **MUST** inspect the current page, relevant frames, open shadow roots and `context.pages()` with normal Playwright APIs. It **MUST** also capture a viewport screenshot, emit it with `opencode.emitImage`, and visually inspect the emitted image. Capturing or emitting a screenshot without visually evaluating it **MUST NOT** be treated as satisfying this step. DOM inspection alone **MUST NOT** be used to conclude that no visible interruption exists.
@@ -162,9 +164,9 @@ The agent **MUST NOT** automatically dismiss anything that may be relevant to th
 
 Interruptions can appear later. If a new cookie prompt, overlay, modal, interstitial or popup page appears at any point, the agent **MUST** pause the current workflow immediately, apply the same inspect-dismiss-verify gate, and **MUST NOT** resume the task until that gate is complete.
 
-## Proof Gate Before Automation
+## CRITICAL: Mandatory Proof Gate Before Automation
 
-The agent **MUST NOT** write or execute a large multi-step script, loop, helper or batch of interactions based on untested assumptions about selectors, page state or transitions. Before automating a flow, it **MUST** use the persistent REPL to complete the proposed flow successfully at least once as small, sequential Playwright operations.
+**CRITICAL:** The agent **MUST NOT** write or execute a large multi-step script, loop, helper or batch of interactions based on untested assumptions about selectors, page state or transitions. Before automating a flow, it **MUST** use the persistent REPL to complete the proposed flow successfully at least once as small, sequential Playwright operations.
 
 For the proving pass, the agent **MUST** inspect the current state, choose the next locator, perform one interaction, and verify its expected visible result before continuing. A locator resolving successfully **MUST NOT** be treated as proof that the interaction or transition works. The agent **MUST NOT** bundle an unproven next step into the same call.
 
