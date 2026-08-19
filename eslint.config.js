@@ -30,9 +30,7 @@ export default defineConfig([
         { pattern: 'plugins/js-repl/index.ts', category: 'entry' },
         { pattern: 'plugins/js-repl/runtime.ts', category: 'core' },
         { pattern: 'plugins/js-repl/scripts/stealth-runtime.mjs', category: 'stealth' },
-        { pattern: 'plugins/js-repl/scripts/stealth-aria.mjs', category: 'utils' },
         { pattern: 'plugins/js-repl/scripts/stealth-input.mjs', category: 'utils' },
-        { pattern: 'plugins/js-repl/scripts/stealth-profile-store.mjs', category: 'store' },
         { pattern: 'plugins/js-repl/scripts/stealth-utils.mjs', category: 'utils' }
       ]
     },

@@ -144,12 +144,12 @@ const REPL_DESC =
   "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. Send plain JavaScript without Markdown fences. The final expression value is returned automatically when it is not undefined; console.log is unnecessary for a value such as 2 + 2. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). A timeout ends only the tool call: the kernel and cell continue running, and later calls wait behind it. This is a trusted local-code runtime, not a sandbox."
 
 const SKILL_DESC =
-  'Persistent Playwright browser and Electron QA through js_repl, with standard Playwright Chromium for local apps and managed Camoufox for remote websites. Use when opening, debugging, testing, or visually inspecting local web apps, responsive interfaces, remote websites, or Electron applications.'
+  'Persistent Playwright browser and Electron QA through js_repl, with standard Playwright Chromium for local apps and Camoufox plus humanized input for remote websites. Use when opening, debugging, testing, or visually inspecting local web apps, responsive interfaces, remote websites, or Electron applications.'
 
 const PLUGIN_DESC =
   'Open a persistent Playwright browser or Electron session for interactive QA. Pass a target URL, app path, or task description.'
 const PLUGIN_TEMPLATE =
-  'Use the playwright-interactive skill to handle this request. Run js_repl_playwright_setup first, then select the correct startup mode (Electron, local web, or remote stealth) based on the target, complete the full startup block, and then carry out the task.'
+  'Use the playwright-interactive skill to handle this request. Run js_repl_playwright_setup first, select the correct startup mode, use Playwright for browser lifecycle and locators, and use humanized input only for remote-site interactions.'
 
 function applySkillTransform(
   skills: { add(skill: unknown): void },

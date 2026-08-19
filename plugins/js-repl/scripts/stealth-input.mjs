@@ -1,6 +1,5 @@
 import {
   FALLBACK_VIEWPORT,
-  STRUCTURAL_ROLES,
   clamp,
   digraphFactor,
   fittsDuration,
@@ -24,30 +23,19 @@ function sequence(items, operation) {
   return chain
 }
 
-async function validateTargetSemantics(target, browserBinding, currentPage) {
-  browserBinding.assertLocator(currentPage, target)
-  const semantics = await target.evaluate((element) => ({
-    role: element.getAttribute('role')?.toLowerCase() || '',
-    tag: element.tagName.toLowerCase(),
-    nativeControl: element.matches(
-      'button, a[href], input:not([type=hidden]), select, textarea, summary, [contenteditable=true]'
-    )
-  }))
-  const isStructuralTag = ['search', 'main', 'nav', 'header', 'footer'].includes(semantics.tag)
-  if (!semantics.nativeControl && (isStructuralTag || STRUCTURAL_ROLES.includes(semantics.role))) {
-    throw new Error(
-      `Stealth target is a non-interactive ${semantics.role || semantics.tag} container; locate its nested control`
-    )
+async function validateTarget(target, currentPage) {
+  if (typeof target.page === 'function' && target.page() !== currentPage) {
+    throw new Error('The target locator belongs to a different Playwright page')
   }
 
   if (typeof target.isEnabled === 'function' && !(await target.isEnabled())) {
-    throw new Error('Stealth target is disabled')
+    throw new Error('The target locator is disabled')
   }
 }
 
-async function targetBox(currentPage, target, browserBinding) {
+async function targetBox(currentPage, target) {
   if (target && typeof target.boundingBox === 'function') {
-    await validateTargetSemantics(target, browserBinding, currentPage)
+    await validateTarget(target, currentPage)
     await target.scrollIntoViewIfNeeded()
     const box = await target.boundingBox()
     if (!box || box.width <= 0 || box.height <= 0) {
@@ -94,7 +82,7 @@ async function findClickablePoints(currentPage, target) {
       const root = element.getRootNode()
       const hitTestRoot = typeof root.elementFromPoint === 'function' ? root : element.ownerDocument
       const targetLink = element.closest?.('a[href]')
-      const labels = element.labels ? Array.from(element.labels) : []
+      const labels = element.labels ? [...element.labels] : []
       return points.filter((point) => {
         const offsetX = rect.width * point.x
         const offsetY = rect.height * point.y
@@ -125,22 +113,6 @@ function stealthPointsFor(box, clickable) {
     const offsetY = box.height * point.y
     return { x: box.x + offsetX, y: box.y + offsetY }
   })
-}
-
-function createPageState(profile, pageSequence) {
-  return {
-    page: null,
-    pageId: `${profile.profileId}:${++pageSequence}`,
-    x: undefined,
-    y: undefined,
-    busy: false,
-    action: undefined,
-    inventoryReadyAt: Date.now() + 1800,
-    lastDocumentStatus: undefined,
-    stopped: false,
-    queue: Promise.resolve(),
-    removers: []
-  }
 }
 
 function computeEasing(duration, index, total, elapsed) {
@@ -189,8 +161,8 @@ function createMoveHelpers(profile, viewport, requirePage) {
     })
   }
 
-  const moveToTarget = async (currentPage, state, target, browserBinding) => {
-    const box = await targetBox(currentPage, target, browserBinding)
+  const moveToTarget = async (currentPage, state, target) => {
+    const box = await targetBox(currentPage, target)
     await moveToPoint(currentPage, state, pointFor(box, profile))
   }
 
@@ -298,9 +270,9 @@ function createInputHelpers(profile, requirePage, moveToPoint) {
     currentPage,
     state,
     target,
-    { browserBinding, modifiers, button, count = 1 } = {}
+    { modifiers, button, count = 1 } = {}
   ) => {
-    const box = await targetBox(currentPage, target, browserBinding)
+    const box = await targetBox(currentPage, target)
     const point = pointFor(box, profile)
     await sleep(Math.min(1200, logNormal(profile.actionGapMean, profile.actionGapSigma)))
     await withModifiers(currentPage, modifiers, () =>
@@ -311,4 +283,4 @@ function createInputHelpers(profile, requirePage, moveToPoint) {
   return { withModifiers, pressKey, typeText, performClick }
 }
 
-export { createInputHelpers, createMoveHelpers, createPageState, pageViewport, targetBox }
+export { createInputHelpers, createMoveHelpers, pageViewport }
