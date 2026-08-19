@@ -7,6 +7,8 @@ description: Persistent Playwright browser and Electron QA through js_repl, with
 
 Use persistent `js_repl` Playwright handles for browser and Electron QA.
 
+The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **MAY**, and **OPTIONAL** in this skill are to be interpreted as described in RFC 2119.
+
 ## Startup
 
 Run setup first:
@@ -146,31 +148,31 @@ Do not assume the outcome.
 
 ## Mandatory Remote Cleanup Gate
 
-This gate is the first activity after the first navigation to each remote origin. Before extracting task content, starting the requested workflow, performing the proving pass, or reporting any result, the agent MUST complete all of these steps:
+This gate **MUST** be the first activity after the first navigation to each remote origin. Before extracting task content, starting the requested workflow, performing the proving pass, or reporting any result, the agent **MUST** complete all of these steps in order:
 
-1. Wait roughly 1–2 seconds for delayed consent managers, overlays and popup pages to appear.
-2. Inspect the current page, relevant frames, open shadow roots and `context.pages()` with normal Playwright APIs, and capture a viewport screenshot. The screenshot is mandatory because DOM inspection alone does not prove that no visible interruption exists.
-3. If a cookie or consent prompt is visible, choose the affirmative control whose meaning is to accept or allow all cookie categories. Its wording and language vary by site; identify it by meaning rather than relying on a fixed label such as `Accept all`. Do not choose a narrower, rejecting or settings option unless the user asks.
-4. Dismiss every unrelated, benign interruption that has a safe visible dismissal control. This includes newsletter prompts, surveys, promotional modals, chat invitations, interstitials and unrelated popup pages. Controls may mean close, dismiss, cancel, skip, continue without, not now or an equivalent phrase in another language. Use normal Playwright locators to identify controls and humanized input to activate them. Close an unrelated popup page with Playwright only after confirming it is not part of the requested flow.
-5. Reinspect in a separate pass and confirm that each cookie prompt, dismissed overlay and unrelated popup is gone and that the intended workflow page is active. A timed-out dismissal click can still have succeeded when the control removed itself; judge success by this end state and do not retry blindly.
+1. The agent **MUST** wait roughly 1–2 seconds for delayed consent managers, overlays and popup pages to appear.
+2. The agent **MUST** inspect the current page, relevant frames, open shadow roots and `context.pages()` with normal Playwright APIs. It **MUST** also capture a viewport screenshot, emit it with `opencode.emitImage`, and visually inspect the emitted image. Capturing or emitting a screenshot without visually evaluating it **MUST NOT** be treated as satisfying this step. DOM inspection alone **MUST NOT** be used to conclude that no visible interruption exists.
+3. If a cookie or consent prompt is visible, the agent **MUST** choose the affirmative control whose meaning is to accept or allow all cookie categories. Its wording and language vary by site, so the agent **MUST** identify it by meaning rather than rely on a fixed label such as `Accept all`. It **MUST NOT** choose a narrower, rejecting or settings option unless the user asks.
+4. The agent **MUST** dismiss every unrelated, benign interruption that has a safe visible dismissal control. This includes newsletter prompts, surveys, promotional modals, chat invitations, interstitials and unrelated popup pages. Controls may mean close, dismiss, cancel, skip, continue without, not now or an equivalent phrase in another language. The agent **MUST** use normal Playwright locators to identify controls and humanized input to activate them. It **MUST NOT** close a popup page until Playwright inspection confirms that the page is unrelated to the requested flow.
+5. In a separate pass, the agent **MUST** reinspect the page and open pages, capture and visually inspect a fresh screenshot, and confirm that each cookie prompt, dismissed overlay and unrelated popup is gone and that the intended workflow page is active. A timed-out dismissal click can still have succeeded when the control removed itself; the agent **MUST** judge success by this verified end state and **MUST NOT** retry blindly.
 
-The gate is not complete while a visible cookie prompt or safely dismissible unrelated interruption remains. If a control cannot be identified confidently or the interruption cannot be dismissed, stop and inspect rather than beginning the task underneath it.
+The gate **MUST NOT** be considered complete while a visible cookie prompt or safely dismissible unrelated interruption remains. If a control cannot be identified confidently or the interruption cannot be dismissed, the agent **MUST** stop and inspect rather than begin the task underneath it.
 
-Do not automatically dismiss anything that may be relevant to the task, including authentication, permission decisions, destructive confirmations, validation errors, checkout or submission confirmation, file choosers, or dialogs whose consequence is unclear. Inspect or ask instead of guessing.
+The agent **MUST NOT** automatically dismiss anything that may be relevant to the task, including authentication, permission decisions, destructive confirmations, validation errors, checkout or submission confirmation, file choosers, or dialogs whose consequence is unclear. It **MUST** inspect or ask instead of guessing.
 
-Interruptions can appear later. If a new cookie prompt, overlay, modal, interstitial or popup page appears at any point, pause the current workflow immediately, apply the same inspect-dismiss-verify gate, and only then resume the task.
+Interruptions can appear later. If a new cookie prompt, overlay, modal, interstitial or popup page appears at any point, the agent **MUST** pause the current workflow immediately, apply the same inspect-dismiss-verify gate, and **MUST NOT** resume the task until that gate is complete.
 
 ## Proof Gate Before Automation
 
-Do not write or execute a large multi-step script, loop, helper or batch of interactions based on untested assumptions about selectors, page state or transitions. Before automating a flow, use the persistent REPL to complete the proposed flow successfully at least once as small, sequential Playwright operations.
+The agent **MUST NOT** write or execute a large multi-step script, loop, helper or batch of interactions based on untested assumptions about selectors, page state or transitions. Before automating a flow, it **MUST** use the persistent REPL to complete the proposed flow successfully at least once as small, sequential Playwright operations.
 
-For the proving pass, inspect the current state, choose the next locator, perform one interaction, and verify its expected visible result before continuing. A locator resolving successfully is not proof that the interaction or transition works. Do not bundle an unproven next step into the same call.
+For the proving pass, the agent **MUST** inspect the current state, choose the next locator, perform one interaction, and verify its expected visible result before continuing. A locator resolving successfully **MUST NOT** be treated as proof that the interaction or transition works. The agent **MUST NOT** bundle an unproven next step into the same call.
 
-Only after the complete representative sequence has worked once may the agent consolidate those exact proven steps into a larger script or repeated automation. If the UI, navigation outcome, popup behavior or other assumption differs from the proving pass, stop the automation at that divergence and prove the changed path one step at a time before updating the script.
+Only after the complete representative sequence has worked once **MAY** the agent consolidate those exact proven steps into a larger script or repeated automation. If the UI, navigation outcome, popup behavior or other assumption differs from the proving pass, the agent **MUST** stop the automation at that divergence and **MUST** prove the changed path one step at a time before updating the script.
 
-Do not preemptively build fallback trees, speculative selector lists, retry loops or broad DOM-evaluation scripts to cover states that have not been observed. Inspect the actual state first.
+The agent **MUST NOT** preemptively build fallback trees, speculative selector lists, retry loops or broad DOM-evaluation scripts to cover states that have not been observed. It **MUST** inspect the actual state first and **MUST** prove each required branch before including that branch in automation.
 
-The required startup block, read-only inspection and a single isolated interaction are not automation and do not require a prior proving pass. Irreversible or externally consequential actions must remain incremental; do not repeat them merely to prove that a consolidated script can replay them.
+The required startup block, read-only inspection and a single isolated interaction **MAY** proceed without a prior proving pass because they are not automation. Irreversible or externally consequential actions **MUST** remain incremental and **MUST NOT** be repeated merely to prove that a consolidated script can replay them.
 
 ## Humanized Input
 
