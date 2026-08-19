@@ -27,7 +27,7 @@ After setup, the agent **MUST** send each browser REPL cell as plain JavaScript 
 
 This avoids nesting JavaScript source inside another template literal. If `execute` reports `Failed to parse TypeScript`, the cell did not reach `js_repl`; correct the outer JavaScript syntax and retry the same small cell without resetting the kernel.
 
-Select exactly one startup mode. A local URL uses standard Chromium, a remote URL uses Camoufox, and Electron uses its own launcher. Do not navigate during startup.
+Select exactly one startup mode. A local URL uses standard Chromium, a remote URL uses Camoufox, and Electron uses its own launcher. Do not navigate during startup. Web contexts **MUST** use `viewport: null` so the page viewport follows manual browser-window resizing instead of remaining fixed at Playwright's 1280x720 default.
 
 ### Local Web
 
@@ -40,11 +40,14 @@ var PERSISTENT_PROFILE_DIR = undefined
 var browser
 var context
 if (PERSISTENT_PROFILE_DIR) {
-  context = await chromium.launchPersistentContext(PERSISTENT_PROFILE_DIR, { headless: HEADLESS })
+  context = await chromium.launchPersistentContext(PERSISTENT_PROFILE_DIR, {
+    headless: HEADLESS,
+    viewport: null
+  })
   browser = context.browser()
 } else {
   browser = await chromium.launch({ headless: HEADLESS })
-  context = await browser.newContext()
+  context = await browser.newContext({ viewport: null })
 }
 var page = context.pages()[0] || (await context.newPage())
 ;({ status: 'Standard Chromium opened', persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) })
@@ -68,12 +71,13 @@ var context
 if (PERSISTENT_PROFILE_DIR) {
   context = await core.firefox.launchPersistentContext(PERSISTENT_PROFILE_DIR, {
     ...camoufoxOptions,
-    headless: HEADLESS
+    headless: HEADLESS,
+    viewport: null
   })
   browser = context.browser()
 } else {
   browser = await core.firefox.launch({ ...camoufoxOptions, headless: HEADLESS })
-  context = await browser.newContext()
+  context = await browser.newContext({ viewport: null })
 }
 var page = context.pages()[0] || (await context.newPage())
 var humanizedInputPath = path.join(opencode.scriptDir, 'humanized-input.mjs')
