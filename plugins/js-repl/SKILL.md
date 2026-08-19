@@ -109,6 +109,51 @@ A persistent profile may contain credentials, cookies and browsing history. Neve
 
 Use Playwright directly for every element lookup. The humanized input module has no locator, accessibility inventory, frame discovery, overlay discovery, popup handling or tab tracking API.
 
+### REQUIRED: AI-Optimized Element Discovery
+
+When the next target is not already known from current, verified evidence, the agent **MUST** capability-detect and use Playwright's AI-optimized ARIA snapshot as its first element-discovery operation. It **MUST** try `ariaSnapshot` first, then `ariaSnapshotJSON` when the first method is unavailable:
+
+```js
+var aiSnapshotOptions = { mode: 'ai', boxes: true, timeout: 5000 }
+var uiSnapshot
+if (typeof page.ariaSnapshot === 'function') {
+  uiSnapshot = await page.ariaSnapshot(aiSnapshotOptions)
+} else if (typeof page.ariaSnapshotJSON === 'function') {
+  uiSnapshot = await page.ariaSnapshotJSON(aiSnapshotOptions)
+} else {
+  uiSnapshot = undefined
+}
+uiSnapshot
+```
+
+When either method is available, the agent **MUST** inspect its result before trying selectors. AI mode provides roles, accessible names, element references such as `[ref=e2]` in the text format or equivalent `ref` fields in JSON, and nested iframe snapshots. `boxes: true` adds viewport-relative element bounds. This single Playwright-native representation **SHOULD** replace repeated guessed locators, frame-by-frame searches and broad DOM inspection.
+
+The agent **MUST NOT** assume either method exists solely from a remembered Playwright version. If neither method is available, it **MAY** fall back to exact user-facing Playwright locators plus screenshot inspection and **MUST NOT** recreate an accessibility inventory with custom DOM scripts.
+
+When the snapshot identifies the intended element by reference, the agent **MAY** use that reference immediately for exploratory targeting:
+
+```js
+var target = page.locator('aria-ref=e2')
+```
+
+`aria-ref` is an implementation-backed, ephemeral selector rather than a documented durable selector API. The agent **MUST** use it in the frame that owns the referenced element and **MUST NOT** persist it in reusable automation. It **SHOULD** derive durable interactions from the observed role, label, text or test id using public locators such as `getByRole()` or `getByLabel()`.
+
+ARIA references are tied to the most recent snapshot and current UI state. After another snapshot in that frame, navigation or a material DOM change, the agent **MUST** take a fresh snapshot before using a reference. It **MUST NOT** guess an `aria-ref` value.
+
+If the relevant region is already known, the agent **SHOULD** scope the snapshot to that Playwright locator to reduce output:
+
+```js
+var dialog = page.getByRole('dialog')
+var dialogSnapshot =
+  typeof dialog.ariaSnapshot === 'function'
+    ? await dialog.ariaSnapshot(aiSnapshotOptions)
+    : typeof dialog.ariaSnapshotJSON === 'function'
+      ? await dialog.ariaSnapshotJSON(aiSnapshotOptions)
+      : undefined
+```
+
+On exceptionally large pages, the agent **MAY** use `depth` to bound a snapshot, but **MUST NOT** conclude that an element is absent when it may have been excluded by that depth. If the AI snapshot does not expose a visibly present control, the agent **MUST** inspect the screenshot and then use normal Playwright locators against the observed UI. An exact user-facing locator already established by current evidence **MAY** be used directly without another snapshot.
+
 Prefer Playwright's user-facing locators:
 
 ```js
@@ -153,7 +198,7 @@ Do not assume the outcome.
 **CRITICAL:** This mandatory gate **MUST** be the first activity after the first navigation to each remote origin. Before extracting task content, starting the requested workflow, performing the proving pass, or reporting any result, the agent **MUST** complete all of these steps in order:
 
 1. The agent **MUST** wait roughly 1–2 seconds for delayed consent managers, overlays and popup pages to appear.
-2. The agent **MUST** inspect the current page, relevant frames, open shadow roots and `context.pages()` with normal Playwright APIs. It **MUST** also capture a viewport screenshot, emit it with `opencode.emitImage`, and visually inspect the emitted image. Capturing or emitting a screenshot without visually evaluating it **MUST NOT** be treated as satisfying this step. DOM inspection alone **MUST NOT** be used to conclude that no visible interruption exists.
+2. The agent **MUST** use the capability-detected AI snapshot procedure from **AI-Optimized Element Discovery** as the first DOM inspection, review relevant frames and `context.pages()` with normal Playwright APIs, capture a viewport screenshot, emit it with `opencode.emitImage`, and visually inspect the emitted image. Capturing or emitting a screenshot without visually evaluating it **MUST NOT** be treated as satisfying this step. The AI snapshot or other DOM inspection alone **MUST NOT** be used to conclude that no visible interruption exists.
 3. If a cookie or consent prompt is visible, the agent **MUST** choose the affirmative control whose meaning is to accept or allow all cookie categories. Its wording and language vary by site, so the agent **MUST** identify it by meaning rather than rely on a fixed label such as `Accept all`. It **MUST NOT** choose a narrower, rejecting or settings option unless the user asks.
 4. The agent **MUST** dismiss every unrelated, benign interruption that has a safe visible dismissal control. This includes newsletter prompts, surveys, promotional modals, chat invitations, interstitials and unrelated popup pages. Controls may mean close, dismiss, cancel, skip, continue without, not now or an equivalent phrase in another language. The agent **MUST** use normal Playwright locators to identify controls and humanized input to activate them. It **MUST NOT** close a popup page until Playwright inspection confirms that the page is unrelated to the requested flow.
 5. In a separate pass, the agent **MUST** reinspect the page and open pages, capture and visually inspect a fresh screenshot, and confirm that each cookie prompt, dismissed overlay and unrelated popup is gone and that the intended workflow page is active. A timed-out dismissal click can still have succeeded when the control removed itself; the agent **MUST** judge success by this verified end state and **MUST NOT** retry blindly.
