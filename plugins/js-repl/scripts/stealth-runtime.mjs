@@ -255,10 +255,10 @@ function createVisibleResolution(requirePage, semantic) {
     const result = await attemptProbe(
       currentPage,
       locatorForFrame,
-      Object.freeze({
+      {
         deadline,
         nextProbeAt: 0
-      })
+      }
     )
     if (result) {
       return result
@@ -362,7 +362,6 @@ async function settleController(resolveController, paths, profileKind) {
 
 async function readRecordForLaunch({
   paths,
-  runtimeSessionId,
   profile,
   persona,
   readRecord,
@@ -372,22 +371,17 @@ async function readRecordForLaunch({
     schema: 2,
     profileId: profile.profileId,
     personaId: persona.personaId,
-    sessionId: runtimeSessionId,
+    sessionId: '',
     behaviorSchema: profile.schema,
     personaSchema: persona.schema,
     createdAt: new Date().toISOString(),
     lastUsedAt: new Date().toISOString(),
     resetGeneration: 0
   }))
-  if (metadata.sessionId && metadata.sessionId !== runtimeSessionId) {
-    throw new Error(
-      `Stealth profile ${paths.root} is bound to a different OpenCode session and cannot be adopted`
-    )
-  }
-
   metadata.profileId = profile.profileId
   metadata.personaId = persona.personaId
-  metadata.sessionId = runtimeSessionId
+  // The persistent browser identity is reusable across OpenCode sessions.
+  metadata.sessionId = ''
   await writeRecord(paths.identityMetadata, metadata)
   return metadata
 }
@@ -431,7 +425,6 @@ async function prepareAndLaunch(deps, launch) {
   const persona = await deps.readRecord(paths.persona, normalizePersona, createPersona)
   const metadata = await readRecordForLaunch({
     paths,
-    runtimeSessionId: deps.runtimeSessionId,
     profile,
     persona,
     readRecord: deps.readRecord,
