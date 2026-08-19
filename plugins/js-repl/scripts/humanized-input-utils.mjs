@@ -1,4 +1,4 @@
-// Pure helpers for the stealth runtime: no browser, profile or session state.
+// Pure helpers for humanized input: no browser, profile or session state.
 // Behavior math (pointer paths, timing, typing latency) lives here so the
 // stateful runtime can stay focused on lifecycle and Playwright orchestration.
 

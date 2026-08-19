@@ -1,5 +1,5 @@
-import { createInputHelpers, createMoveHelpers, pageViewport } from './stealth-input.mjs'
-import { clamp, sleep, uniform } from './stealth-utils.mjs'
+import { createInputHelpers, createMoveHelpers, pageViewport } from './humanized-input-actions.mjs'
+import { clamp, sleep, uniform } from './humanized-input-utils.mjs'
 
 const DEFAULT_PROFILE = Object.freeze({
   profileId: 'humanized-input',

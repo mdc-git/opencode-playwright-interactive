@@ -1,7 +1,7 @@
 {
   "entry": [
-    "plugins/js-repl/scripts/stealth-runtime.mjs",
-    "plugins/js-repl/scripts/stealth-utils.mjs"
+    "plugins/js-repl/scripts/humanized-input.mjs",
+    "plugins/js-repl/scripts/humanized-input-utils.mjs"
   ],
   "project": ["plugins/**/*.{ts,mjs}"]
 }

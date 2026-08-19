@@ -9,7 +9,7 @@ import {
   pointFor,
   sleep,
   uniform
-} from './stealth-utils.mjs'
+} from './humanized-input-utils.mjs'
 
 const modifierList = (modifiers) =>
   Array.isArray(modifiers) ? modifiers : modifiers ? [modifiers] : []

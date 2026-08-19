@@ -29,9 +29,9 @@ export default defineConfig([
       'boundaries/files': [
         { pattern: 'plugins/js-repl/index.ts', category: 'entry' },
         { pattern: 'plugins/js-repl/runtime.ts', category: 'core' },
-        { pattern: 'plugins/js-repl/scripts/stealth-runtime.mjs', category: 'stealth' },
-        { pattern: 'plugins/js-repl/scripts/stealth-input.mjs', category: 'utils' },
-        { pattern: 'plugins/js-repl/scripts/stealth-utils.mjs', category: 'utils' }
+        { pattern: 'plugins/js-repl/scripts/humanized-input.mjs', category: 'input' },
+        { pattern: 'plugins/js-repl/scripts/humanized-input-actions.mjs', category: 'utils' },
+        { pattern: 'plugins/js-repl/scripts/humanized-input-utils.mjs', category: 'utils' }
       ]
     },
     plugins: {
@@ -62,11 +62,7 @@ export default defineConfig([
               allow: { to: { file: { categories: ['core'] } } }
             },
             {
-              from: { file: { categories: ['stealth'] } },
-              allow: { to: { file: { categories: ['store', 'utils'] } } }
-            },
-            {
-              from: { file: { categories: ['store'] } },
+              from: { file: { categories: ['input'] } },
               allow: { to: { file: { categories: ['utils'] } } }
             },
             {
@@ -79,9 +75,9 @@ export default defineConfig([
     }
   },
 
-  // Browser globals for Playwright page.evaluate() callbacks in stealth scripts
+  // Browser globals for Playwright page.evaluate() callbacks in input scripts
   {
-    files: ['plugins/js-repl/scripts/stealth-*.mjs'],
+    files: ['plugins/js-repl/scripts/humanized-input-*.mjs'],
     languageOptions: {
       globals: globals.browser
     }
