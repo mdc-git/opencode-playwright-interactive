@@ -144,6 +144,22 @@ if (openedPages.length === 1) page = openedPages[0]
 
 Do not assume the outcome.
 
+## Mandatory Remote Cleanup Gate
+
+This gate is the first activity after the first navigation to each remote origin. Before extracting task content, starting the requested workflow, performing the proving pass, or reporting any result, the agent MUST complete all of these steps:
+
+1. Wait roughly 1–2 seconds for delayed consent managers, overlays and popup pages to appear.
+2. Inspect the current page, relevant frames, open shadow roots and `context.pages()` with normal Playwright APIs, and capture a viewport screenshot. The screenshot is mandatory because DOM inspection alone does not prove that no visible interruption exists.
+3. If a cookie or consent prompt is visible, choose the affirmative control whose meaning is to accept or allow all cookie categories. Its wording and language vary by site; identify it by meaning rather than relying on a fixed label such as `Accept all`. Do not choose a narrower, rejecting or settings option unless the user asks.
+4. Dismiss every unrelated, benign interruption that has a safe visible dismissal control. This includes newsletter prompts, surveys, promotional modals, chat invitations, interstitials and unrelated popup pages. Controls may mean close, dismiss, cancel, skip, continue without, not now or an equivalent phrase in another language. Use normal Playwright locators to identify controls and humanized input to activate them. Close an unrelated popup page with Playwright only after confirming it is not part of the requested flow.
+5. Reinspect in a separate pass and confirm that each cookie prompt, dismissed overlay and unrelated popup is gone and that the intended workflow page is active. A timed-out dismissal click can still have succeeded when the control removed itself; judge success by this end state and do not retry blindly.
+
+The gate is not complete while a visible cookie prompt or safely dismissible unrelated interruption remains. If a control cannot be identified confidently or the interruption cannot be dismissed, stop and inspect rather than beginning the task underneath it.
+
+Do not automatically dismiss anything that may be relevant to the task, including authentication, permission decisions, destructive confirmations, validation errors, checkout or submission confirmation, file choosers, or dialogs whose consequence is unclear. Inspect or ask instead of guessing.
+
+Interruptions can appear later. If a new cookie prompt, overlay, modal, interstitial or popup page appears at any point, pause the current workflow immediately, apply the same inspect-dismiss-verify gate, and only then resume the task.
+
 ## Proof Gate Before Automation
 
 Do not write or execute a large multi-step script, loop, helper or batch of interactions based on untested assumptions about selectors, page state or transitions. Before automating a flow, use the persistent REPL to complete the proposed flow successfully at least once as small, sequential Playwright operations.
@@ -188,21 +204,7 @@ Humanized typing is intentionally slower. Use `timeout_ms: 60000` or higher for 
 
 Navigate to the user-requested origin and reach later states through visible UI controls. Do not invent deep links, query strings or form endpoints to bypass the UI.
 
-Before interacting, check whether the requested information is already present in the DOM. If it is, read it without unnecessary input. When the current state or target is unclear, inspect a screenshot instead of guessing selectors.
-
-## Remote Interruptions
-
-After the first remote navigation, wait briefly for delayed consent or modal UI. Interruptions can also appear later, so reassess whenever the visible state changes unexpectedly or a planned action is blocked.
-
-Inspect the current page, relevant frames, open shadow roots and `context.pages()` with normal Playwright APIs. Use a screenshot whenever DOM inspection does not make the visible interruption and its controls unambiguous.
-
-When a cookie or consent prompt appears, choose the visible affirmative option whose meaning is to accept or allow all cookie categories. Its wording and language vary by site; identify it by meaning rather than relying on a fixed label such as `Accept all`. Do not choose a narrower, rejecting or settings option unless the user asks.
-
-Dismiss unrelated, benign interruptions when a safe visible control exists. This includes newsletter prompts, surveys, promotional modals, chat invitations, interstitials and unrelated popup pages. Controls may be expressed as close, dismiss, cancel, skip, continue without, not now or an equivalent phrase in another language. Use normal Playwright locators to identify the control and humanized input to activate it. Close an unrelated popup page with Playwright only after confirming it is not part of the requested flow.
-
-Do not automatically dismiss anything that may be relevant to the task, including authentication, permission decisions, destructive confirmations, validation errors, checkout or submission confirmation, file choosers, or dialogs whose consequence is unclear. Inspect or ask instead of guessing.
-
-After accepting or dismissing an interruption, verify in a separate inspection that it is gone and that the intended workflow page remains active. A timed-out dismissal click can still have succeeded when the control removed itself; judge the result by this verified end state rather than retrying blindly.
+After completing the mandatory remote cleanup gate, check whether the requested information is already present in the DOM. If it is, read it without unnecessary task interaction. When the current state or target is unclear, inspect a screenshot instead of guessing selectors.
 
 ## Session Persistence
 
