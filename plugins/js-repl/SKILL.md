@@ -20,22 +20,25 @@ Select exactly one startup mode. A local URL uses standard Chromium, a remote UR
 ### Local Web
 
 ```js
-var playwright = await import('playwright')
-var chromium = playwright.chromium
-var HEADLESS = false
+return await tools.js_repl({
+  code: `var playwright = await import("playwright");
+var chromium = playwright.chromium;
+var HEADLESS = false;
 // Set only when the user explicitly supplies a profile directory.
-var PERSISTENT_PROFILE_DIR = undefined
-var browser
-var context
+var PERSISTENT_PROFILE_DIR = undefined;
+var browser;
+var context;
 if (PERSISTENT_PROFILE_DIR) {
-  context = await chromium.launchPersistentContext(PERSISTENT_PROFILE_DIR, { headless: HEADLESS })
-  browser = context.browser()
+  context = await chromium.launchPersistentContext(PERSISTENT_PROFILE_DIR, { headless: HEADLESS });
+  browser = context.browser();
 } else {
-  browser = await chromium.launch({ headless: HEADLESS })
-  context = await browser.newContext()
+  browser = await chromium.launch({ headless: HEADLESS });
+  context = await browser.newContext();
 }
-var page = context.pages()[0] || (await context.newPage())
-;({ status: 'Standard Chromium opened', persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) })
+var page = context.pages()[0] || (await context.newPage());
+({ status: "Standard Chromium opened", persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) });`,
+  timeout_ms: 30000
+})
 ```
 
 Local web uses normal Playwright input. Do not load the humanized input module.
@@ -43,31 +46,34 @@ Local web uses normal Playwright input. Do not load the humanized input module.
 ### Remote Web
 
 ```js
-var core = await import('playwright-core')
-var { launchOptions } = await import('camoufox-js')
-var path = await import('node:path')
-var { pathToFileURL } = await import('node:url')
-var HEADLESS = false
+return await tools.js_repl({
+  code: `var core = await import("playwright-core");
+var { launchOptions } = await import("camoufox-js");
+var path = await import("node:path");
+var { pathToFileURL } = await import("node:url");
+var HEADLESS = false;
 // Set only when the user explicitly supplies a profile directory.
-var PERSISTENT_PROFILE_DIR = undefined
-var camoufoxOptions = await launchOptions({ enable_cache: true })
-var browser
-var context
+var PERSISTENT_PROFILE_DIR = undefined;
+var camoufoxOptions = await launchOptions({ enable_cache: true });
+var browser;
+var context;
 if (PERSISTENT_PROFILE_DIR) {
   context = await core.firefox.launchPersistentContext(PERSISTENT_PROFILE_DIR, {
     ...camoufoxOptions,
-    headless: HEADLESS
-  })
-  browser = context.browser()
+    headless: HEADLESS,
+  });
+  browser = context.browser();
 } else {
-  browser = await core.firefox.launch({ ...camoufoxOptions, headless: HEADLESS })
-  context = await browser.newContext()
+  browser = await core.firefox.launch({ ...camoufoxOptions, headless: HEADLESS });
+  context = await browser.newContext();
 }
-var page = context.pages()[0] || (await context.newPage())
-var humanizedInputPath = path.join(opencode.scriptDir, 'stealth-runtime.mjs')
-var { createHumanizedInput } = await import(pathToFileURL(humanizedInputPath).href)
-var input = createHumanizedInput()
-;({ status: 'Camoufox opened', persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) })
+var page = context.pages()[0] || (await context.newPage());
+var humanizedInputPath = path.join(opencode.scriptDir, "humanized-input.mjs");
+var { createHumanizedInput } = await import(pathToFileURL(humanizedInputPath).href);
+var input = createHumanizedInput();
+({ status: "Camoufox opened", persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) });`,
+  timeout_ms: 30000
+})
 ```
 
 Camoufox supplies the browser-level anti-detection behavior. `input` supplies only humanized input. Playwright owns browser and context lifecycle, pages, tabs, popups, navigation, locators, frames, shadow DOM, waiting, screenshots, and assertions.
@@ -75,13 +81,16 @@ Camoufox supplies the browser-level anti-detection behavior. `input` supplies on
 ### Electron
 
 ```js
-var playwright = await import('playwright')
-var electronLauncher = playwright._electron
-var ELECTRON_ENTRY = '.'
-var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] })
-var appWindow = await electronApp.firstWindow()
-appWindow.setDefaultTimeout(10000)
-;({ status: 'Loaded Electron window', title: await appWindow.title() })
+return await tools.js_repl({
+  code: `var playwright = await import("playwright");
+var electronLauncher = playwright._electron;
+var ELECTRON_ENTRY = ".";
+var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] });
+var appWindow = await electronApp.firstWindow();
+appWindow.setDefaultTimeout(10000);
+({ status: "Loaded Electron window", title: await appWindow.title() });`,
+  timeout_ms: 30000
+})
 ```
 
 Electron uses normal Playwright input and never loads humanized web input.
@@ -108,14 +117,32 @@ Playwright locators pierce open shadow roots by default. Use `frameLocator()` or
 For a popup or new tab, let Playwright observe the event around the action:
 
 ```js
-var popupPromise = context.waitForEvent('page')
-await input.click(page, page.getByRole('link', { name: 'Open details' }))
-var popup = await popupPromise
+var [popup] = await Promise.all([
+  context.waitForEvent('page'),
+  input.click(page, page.getByRole('link', { name: 'Open details' }))
+])
 await popup.waitForLoadState('domcontentloaded')
 page = popup
 ```
 
-Use `Promise.race` or inspect `context.pages()` when an action may either navigate the current page or open a new one. Do not assume the outcome.
+When an action may either navigate the current page or open a new one, compare Playwright's pages and current URL before and after the action instead of leaving an unresolved popup promise:
+
+```js
+var pagesBefore = new Set(context.pages())
+var urlBefore = page.url()
+await input.click(page, navigationLocator)
+await page.waitForTimeout(500)
+var openedPages = context.pages().filter((candidate) => !pagesBefore.has(candidate))
+var navigationKind = openedPages.length
+  ? 'new-page'
+  : page.url() !== urlBefore
+    ? 'same-page'
+    : 'no-navigation'
+if (openedPages.length === 1) page = openedPages[0]
+;({ navigationKind, pages: context.pages().map((candidate) => candidate.url()) })
+```
+
+Do not assume the outcome.
 
 ## Humanized Input
 
