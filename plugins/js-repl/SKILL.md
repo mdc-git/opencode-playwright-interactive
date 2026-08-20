@@ -59,50 +59,49 @@ Local web uses normal Playwright input. Do not load the humanized input module.
 
 ### Remote Web
 
+Remote web defaults to a non-persistent context. The agent **MUST** execute this lifecycle in the documented order: `firefox.launch()` returns a `Browser`, `browser.newContext()` returns a `BrowserContext`, and `context.newPage()` creates the one allowed bootstrap page. It **MUST NOT** swap the `browser` and `context` assignment targets or call `context.browser()` in this mode.
+
 ```js
 var core = await import('playwright-core')
 var { launchOptions } = await import('camoufox-js')
 var path = await import('node:path')
 var { pathToFileURL } = await import('node:url')
 var HEADLESS = false
-// Set only when the user explicitly supplies a profile directory.
-var PERSISTENT_PROFILE_DIR = undefined
 var camoufoxOptions = await launchOptions({ enable_cache: true })
 var firefoxUserPrefs = {
   ...camoufoxOptions.firefoxUserPrefs,
   'browser.link.open_newwindow': 3,
   'browser.link.open_newwindow.restriction': 0
 }
-var browser
-var context
-if (PERSISTENT_PROFILE_DIR) {
-  context = await core.firefox.launchPersistentContext(PERSISTENT_PROFILE_DIR, {
-    ...camoufoxOptions,
-    firefoxUserPrefs,
-    headless: HEADLESS,
-    viewport: null
-  })
-  browser = context.browser()
-} else {
-  browser = await core.firefox.launch({
-    ...camoufoxOptions,
-    firefoxUserPrefs,
-    headless: HEADLESS
-  })
-  context = await browser.newContext({ viewport: null })
-}
-var page = context.pages()[0]
-if (!page && PERSISTENT_PROFILE_DIR) {
-  throw new Error('Persistent context opened without a startup page')
-}
-if (!page) page = await context.newPage() // Non-persistent bootstrap only.
+var browser = await core.firefox.launch({
+  ...camoufoxOptions,
+  firefoxUserPrefs,
+  headless: HEADLESS
+})
+var context = await browser.newContext({ viewport: null })
+var page = await context.newPage() // Initial bootstrap only; use window.open() for more tabs.
 var humanizedInputPath = path.join(opencode.scriptDir, 'humanized-input.mjs')
 var { createHumanizedInput } = await import(pathToFileURL(humanizedInputPath).href)
 var input = createHumanizedInput()
-;({ status: 'Camoufox opened', persistentProfile: Boolean(PERSISTENT_PROFILE_DIR) })
+;({ status: 'Camoufox opened' })
 ```
 
 Camoufox supplies the browser-level anti-detection behavior. `input` supplies only humanized input. Playwright owns browser and context lifecycle, pages, tabs, popups, navigation, locators, frames, shadow DOM, waiting, screenshots, and assertions.
+
+When the user explicitly supplies a profile directory, replace only the three non-persistent lifecycle lines from `var browser = ...` through `var page = ...` with this persistent lifecycle. `launchPersistentContext()` returns a `BrowserContext`, not a `Browser`; `context.browser()` then retrieves its browser. The agent **MUST NOT** combine assignments from the two lifecycle variants.
+
+```js
+var PERSISTENT_PROFILE_DIR = '/exact/user-supplied/path'
+var context = await core.firefox.launchPersistentContext(PERSISTENT_PROFILE_DIR, {
+  ...camoufoxOptions,
+  firefoxUserPrefs,
+  headless: HEADLESS,
+  viewport: null
+})
+var browser = context.browser()
+var page = context.pages()[0]
+if (!page) throw new Error('Persistent context opened without a startup page')
+```
 
 ### Electron
 
@@ -184,7 +183,7 @@ Playwright locators pierce open shadow roots by default. Use `frameLocator()` or
 
 ### REQUIRED: Camoufox Additional Pages
 
-The Remote Web startup configures Firefox's new-window behavior so browser-originated windows open as tabs in the existing visible browser window. The agent **MUST** navigate the initial page to the first target and **MUST NOT** use `context.newPage()` to open an additional Camoufox page, whether the context is persistent or non-persistent. Playwright-created additional Firefox pages can appear as separate visible browser windows even though `context.pages()` reports them in one context, while browser-originated pages join the same visible window as tabs. The startup block's `context.newPage()` fallback is allowed only to bootstrap a non-persistent context that has no initial page. This restriction does not apply to Chromium.
+The Remote Web startup configures Firefox's new-window behavior so browser-originated windows open as tabs in the existing visible browser window. The agent **MUST** navigate the initial page to the first target and **MUST NOT** use `context.newPage()` to open an additional Camoufox page, whether the context is persistent or non-persistent. Playwright-created additional Firefox pages can appear as separate visible browser windows even though `context.pages()` reports them in one context, while browser-originated pages join the same visible window as tabs. The startup block's `context.newPage()` call is allowed only to bootstrap the initial non-persistent page. This restriction does not apply to Chromium.
 
 When a Camoufox/Firefox workflow needs a programmatically opened page rather than a visible link or button, open it through the current page's `window.open()` and let Playwright observe the browser-created page:
 
