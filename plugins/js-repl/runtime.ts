@@ -40,7 +40,6 @@ const MIN_NODE_VERSION = [22, 22, 0] as const
 // foreground result instead of racing into a nearly-complete background job.
 const FOREGROUND_WAIT_MS = 35_000
 const JOB_WAIT_MS = 30_000
-const MAX_JOB_RUNTIME_MS = 120_000
 const CANCEL_INTERRUPT_WAIT_MS = 250
 const CANCEL_RESTART_WAIT_MS = 1500
 const MAX_RETAINED_TERMINAL_JOBS = 20
@@ -83,7 +82,6 @@ type ReplJob = {
   completion: Promise<void>
   complete(): void
   cancelFallback?: NodeJS.Timeout
-  runtimeFallback?: NodeJS.Timeout
 }
 type KernelProcess = ChildProcessWithoutNullStreams & {
   stdio: [
@@ -563,11 +561,6 @@ class ReplController {
       job.cancelFallback = undefined
     }
 
-    if (job.runtimeFallback) {
-      clearTimeout(job.runtimeFallback)
-      job.runtimeFallback = undefined
-    }
-
     if (this.activeJob === job) {
       this.activeJob = undefined
     }
@@ -629,21 +622,6 @@ class ReplController {
             }
           }
         )
-        job.runtimeFallback = setTimeout(() => {
-          if (this.activeJob !== job || job.finishedAt !== undefined) {
-            return
-          }
-
-          void this.stop().finally(() => {
-            this.finishJob(
-              job,
-              'failed',
-              new Error(
-                `JavaScript execution exceeded ${MAX_JOB_RUNTIME_MS / 1000} seconds; the session kernel was restarted`
-              )
-            )
-          })
-        }, MAX_JOB_RUNTIME_MS)
       } catch (error: unknown) {
         this.finishJob(job, 'failed', error instanceof Error ? error : new Error(String(error)))
       }
