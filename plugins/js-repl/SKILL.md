@@ -182,11 +182,11 @@ var email = page.getByLabel('Email')
 
 Playwright locators pierce open shadow roots by default. Use `frameLocator()` or a frame's own locator APIs for iframes. Use normal Playwright inspection and screenshots to identify overlays. Closed shadow roots are not accessible through standard Playwright locators.
 
-### REQUIRED: Persistent Camoufox Additional Pages
+### REQUIRED: Camoufox Additional Pages
 
-The Remote Web startup configures Firefox's new-window behavior so browser-originated windows open as tabs in the existing visible browser window. When that startup uses `PERSISTENT_PROFILE_DIR`, the agent **MUST** use the persistent context's startup page, navigate that page to the first target, and **MUST NOT** use `context.newPage()` to open an additional page. In persistent Camoufox/Firefox contexts, Playwright-created additional pages do not reliably join the same visible browser window, while browser-originated pages in the same context do. This restriction does not apply to Chromium or non-persistent contexts, where `context.newPage()` remains valid.
+The Remote Web startup configures Firefox's new-window behavior so browser-originated windows open as tabs in the existing visible browser window. The agent **MUST** navigate the initial page to the first target and **MUST NOT** use `context.newPage()` to open an additional Camoufox page, whether the context is persistent or non-persistent. Playwright-created additional Firefox pages can appear as separate visible browser windows even though `context.pages()` reports them in one context, while browser-originated pages join the same visible window as tabs. The startup block's `context.newPage()` fallback is allowed only to bootstrap a non-persistent context that has no initial page. This restriction does not apply to Chromium.
 
-In a persistent Camoufox/Firefox context, when the workflow needs a programmatically opened page rather than a visible link or button, open it through the current page's `window.open()` and let Playwright observe the browser-created page:
+When a Camoufox/Firefox workflow needs a programmatically opened page rather than a visible link or button, open it through the current page's `window.open()` and let Playwright observe the browser-created page:
 
 ```js
 var [additionalPage] = await Promise.all([
