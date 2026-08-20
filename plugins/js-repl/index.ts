@@ -161,8 +161,8 @@ function formatExecutionOutcome(outcome: ExecuteOutcome) {
 
   if (outcome.kind === 'background') {
     return {
-      output: `JavaScript is still running.\n\n${formatJob(outcome.job)}`,
-      content: `JavaScript is still running.\n\n${formatJob(outcome.job)}`,
+      output: `JavaScript is still running. Call js_repl_job with wait when no other work is available, or status for an immediate snapshot. Do not submit another REPL cell while this job is active.\n\n${formatJob(outcome.job)}`,
+      content: `JavaScript is still running. Call js_repl_job with wait when no other work is available, or status for an immediate snapshot. Do not submit another REPL cell while this job is active.\n\n${formatJob(outcome.job)}`,
       metadata: { [key('job_id')]: outcome.job.id, state: outcome.job.state }
     }
   }
