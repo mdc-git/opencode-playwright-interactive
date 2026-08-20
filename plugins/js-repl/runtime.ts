@@ -238,7 +238,7 @@ async function withCacheLock<T>(target: string, operation: () => Promise<T>): Pr
   }
 }
 
-type RuntimeOptions = Readonly<{
+export type RuntimeOptions = Readonly<{
   nodePath?: unknown
   nodeModuleDirs?: unknown
   replCacheDir?: unknown
