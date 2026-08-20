@@ -81,7 +81,11 @@ if (PERSISTENT_PROFILE_DIR) {
   browser = await core.firefox.launch({ ...camoufoxOptions, headless: HEADLESS })
   context = await browser.newContext({ viewport: null })
 }
-var page = context.pages()[0] || (await context.newPage())
+var page = context.pages()[0]
+if (!page && PERSISTENT_PROFILE_DIR) {
+  throw new Error('Persistent context opened without a startup page')
+}
+if (!page) page = await context.newPage() // Non-persistent bootstrap only.
 var humanizedInputPath = path.join(opencode.scriptDir, 'humanized-input.mjs')
 var { createHumanizedInput } = await import(pathToFileURL(humanizedInputPath).href)
 var input = createHumanizedInput()
@@ -167,6 +171,23 @@ var email = page.getByLabel('Email')
 ```
 
 Playwright locators pierce open shadow roots by default. Use `frameLocator()` or a frame's own locator APIs for iframes. Use normal Playwright inspection and screenshots to identify overlays. Closed shadow roots are not accessible through standard Playwright locators.
+
+### REQUIRED: Persistent Camoufox Additional Pages
+
+When the Remote Web startup uses `PERSISTENT_PROFILE_DIR`, the agent **MUST** use the persistent context's startup page and **MUST NOT** use `context.newPage()` to open an additional page. In persistent Camoufox/Firefox contexts, Playwright-created additional pages can fail to load while browser-originated pages in the same context work correctly. This restriction does not apply to Chromium or non-persistent contexts, where `context.newPage()` remains valid.
+
+In a persistent Camoufox/Firefox context, when the workflow needs a programmatically opened page rather than a visible link or button, open it through the current page's `window.open()` and let Playwright observe the browser-created page:
+
+```js
+var [additionalPage] = await Promise.all([
+  context.waitForEvent('page'),
+  page.evaluate((url) => window.open(url, '_blank'), TARGET_URL)
+])
+await additionalPage.waitForLoadState('domcontentloaded')
+page = additionalPage
+```
+
+For multiple pages, repeat this sequence from an existing loaded page so every page is browser-originated and remains in the same context. Do not issue multiple `window.open()` calls in one unproven batch.
 
 For a popup or new tab, let Playwright observe the event around the action:
 
