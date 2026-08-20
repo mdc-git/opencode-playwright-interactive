@@ -25,6 +25,8 @@ After setup, the agent **MUST** send each browser REPL cell as plain JavaScript 
 
 `js_repl_playwright_setup` and `js_repl_reset` remain explicit Code Mode tool calls. Browser startup, inspection and interaction cells do not.
 
+Long cells require no wrapper or timeout option. If `js_repl` returns a job ID, use `js_repl_job` with `wait` when no other work is available, `status` for an immediate snapshot, and `cancel` to request state-preserving cancellation. Do not submit another JavaScript cell while the kernel reports an active job. Use `js_repl_reset` only when cancellation remains stuck and losing bindings and browser handles is acceptable. `wait` observes for an internal bounded period and does not stop or restart the job.
+
 This avoids nesting JavaScript source inside another template literal. If `execute` reports `Failed to parse TypeScript`, the cell did not reach `js_repl`; correct the outer JavaScript syntax and retry the same small cell without resetting the kernel.
 
 Select exactly one startup mode. A local URL uses standard Chromium, a remote URL uses Camoufox, and Electron uses its own launcher. Do not navigate during startup. Web contexts **MUST** use `viewport: null` so the page viewport follows manual browser-window resizing instead of remaining fixed at Playwright's 1280x720 default.
@@ -234,10 +236,14 @@ await input.fill(page, page.getByLabel('Email'), 'user@example.com')
 await input.hover(page, page.getByRole('link', { name: 'Details' }))
 await input.check(page, page.getByLabel('Remember me'))
 await input.selectOption(page, page.getByLabel('Country'), 'DE')
+await input.focus(page, page.getByRole('textbox', { name: 'Search' }))
+await input.press(page, 'Enter')
 await input.scroll(page, 850)
 ```
 
 Available methods are `moveTo`, `click`, `doubleClick`, `hover`, `wheel`, `scroll`, `dragTo`, `type`, `fill`, `pressText`, `press`, `focus`, `check`, `uncheck`, and `selectOption`.
+
+`press` and `pressText` operate on the page's currently focused element and accept `(page, key)` and `(page, text)` respectively. Use `focus(page, locator)` first when focus is not already established. Other keyboard and form methods such as `type`, `fill`, `focus`, `check`, `uncheck`, and `selectOption` accept a locator as their second argument.
 
 The module uses locator bounding boxes and hit testing only to execute pointer input against the Playwright-selected target. It does not search for, reinterpret or replace the locator.
 
@@ -250,7 +256,7 @@ await page.goBack()
 var pages = context.pages()
 ```
 
-Humanized typing is intentionally slower. Use `timeout_ms: 60000` or higher for `js_repl` calls containing `input.fill`, `input.type`, or long text.
+Humanized typing is intentionally slower. Long input cells automatically continue as background jobs when they exceed the internal foreground window; use `js_repl_job` to wait for or inspect them.
 
 ## Navigation And Inspection
 
