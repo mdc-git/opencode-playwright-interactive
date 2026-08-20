@@ -22,7 +22,8 @@ The agent can compose the exact inspection or interaction a task requires,
 reuse earlier results, and return focused output instead of a broad page
 snapshot. The bundled skill provides a consistent workflow for local web
 applications, Electron applications, responsive layouts, and remote websites.
-Playwright and Chromium are shared across projects through a common cache.
+Playwright, Chromium, and Camoufox are shared across projects through a common
+cache.
 
 ## Example workflows
 
@@ -62,7 +63,7 @@ access policy and rate limits.
 
 - OpenCode V2
 - Node.js 22.22.0 or newer (spawned by the persistent REPL kernel; defaults to `node` on `PATH`, override with `nodePath`)
-- npm and npx (used to install Playwright and Chromium on first browser request; defaults to `npm`/`npx` on `PATH`, override with `npmPath`, `playwrightNpmPath`, `playwrightNpxPath`)
+- npm and npx (used to install Playwright, Chromium, and Camoufox on the first browser request; defaults to `npm`/`npx` on `PATH`, override with `npmPath`, `playwrightNpmPath`, `playwrightNpxPath`)
 
 ## Install
 
@@ -76,7 +77,10 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "permissions": [{ "action": "js_repl", "resource": "*", "effect": "ask" }],
+  "permissions": [
+    { "action": "js_repl", "resource": "*", "effect": "ask" },
+    { "action": "js_repl_reset", "resource": "*", "effect": "ask" }
+  ],
   "plugins": [
     {
       "package": "opencode-playwright-interactive@git+https://github.com/mdc-git/opencode-playwright-interactive.git",
@@ -95,7 +99,8 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 ```
 
 Paths are used as provided; shell expansion such as `~` is not performed. Use
-`allow` to run the browser tools without prompting or `deny` to block them.
+`allow` to run tools without prompting or `deny` to block them. `js_repl_reset`
+has a separate permission because it destroys the current kernel and its state.
 
 The plugin registers the `playwright-interactive` skill automatically; no
 separate skill directory or entry is required.
@@ -121,7 +126,7 @@ other declared dependencies into an isolated cache, and loads the plugin. See
 > opencode2 service restart
 > ```
 
-## Commands
+## Commands and tools
 
 The plugin registers a `/playwright` slash command. Use it to start a browser
 QA session with a single prompt:
@@ -135,6 +140,29 @@ QA session with a single prompt:
 The command activates the `playwright-interactive` skill, runs setup, and
 instructs the agent to select the correct startup mode before carrying out the
 task. The skill can also be activated directly without the command.
+
+The plugin also registers four Code Mode tools:
+
+- `js_repl` executes JavaScript in the persistent session kernel.
+- `js_repl_job` lists, inspects, waits for, or cancels REPL jobs.
+- `js_repl_reset` clears the session kernel and all retained state.
+- `js_repl_playwright_setup` installs the shared browser runtime.
+
+JavaScript cells do not accept an execution timeout. Quick cells return their
+result normally. A cell still running after 30 seconds returns a job ID and
+continues in the same kernel:
+
+```js
+tools.js_repl_job({ action: 'status', id: 'repl_3' })
+tools.js_repl_job({ action: 'wait', id: 'repl_3' })
+tools.js_repl_job({ action: 'cancel', id: 'repl_3' })
+tools.js_repl_job({ action: 'list' })
+```
+
+`status` and `list` return immediately. `wait` observes the existing job for up
+to 30 seconds and returns its current state if it is still running. It does not
+restart, stop, or resubmit the cell. While a job is active, new JavaScript cells
+return a busy response instead of entering a hidden queue.
 
 ## Verify
 
@@ -151,11 +179,12 @@ opencode2 api get "/api/plugin?location[directory]=$(pwd)"
 ```
 
 The response should contain `local.js-repl`. Start OpenCode in that project and
-confirm that the `playwright-interactive` skill is available.
+confirm that the `playwright-interactive` skill and `js_repl_job` tool are
+available.
 
-The first browser request installs the supported Playwright package and matching
-Chromium under `~/.cache/opencode/playwright` by default. Later sessions reuse
-that installation.
+The first browser request installs the supported Playwright package, matching
+Chromium, and Camoufox under `~/.cache/opencode/playwright` by default. Later
+sessions reuse that installation.
 
 ## Runtime behavior
 
@@ -164,13 +193,16 @@ that installation.
 | Session isolation   | Each OpenCode session has its own Node.js kernel and scratch directory.                                                                                                        |
 | Persistence         | JavaScript state, loaded modules, browser pages, and Electron windows survive between turns.                                                                                   |
 | Package resolution  | Node.js built-ins, workspace packages, local ESM files, and configured module roots are available.                                                                             |
-| Browser cache       | Playwright and Chromium are shared under `~/.cache/opencode/playwright` by default.                                                                                            |
+| Browser cache       | Playwright, Chromium, and Camoufox are shared under `~/.cache/opencode/playwright` by default.                                                                                 |
 | Text output         | Limited to 1 MiB per execution.                                                                                                                                                |
 | Images              | Up to four PNG, JPEG, WebP, or GIF images, limited to 5 MiB each.                                                                                                              |
-| Operation timeout   | Configurable from 1 ms to 300000 ms; the default is 30000 ms.                                                                                                                  |
+| Foreground handoff  | Cells still active after 30 seconds continue as controller-managed background jobs.                                                                                            |
+| Job management      | list/status are immediate; wait observes for up to 30 seconds; cancel preserves the kernel when safe.                                                                          |
+| Busy kernel         | New cells are not queued behind an active job.                                                                                                                                 |
+| Job retention       | Each session retains its 20 newest terminal job records until reset or disposal.                                                                                               |
 | Rejected promises   | A rejected final expression or detached rejection fails the relevant call without resetting the kernel. A late background rejection is reported before the next cell executes. |
-| Timed-out work      | May continue in the session kernel until that kernel is reset.                                                                                                                 |
 | TUI lifecycle       | Closing the TUI does not necessarily stop the background service, kernel, or browser.                                                                                          |
+| Session lifecycle   | Moving or deleting a session disposes its kernel, browser resources, scratch directory, and retained jobs.                                                                     |
 | Plugin cleanup      | Reloading, disabling, or stopping the plugin closes its kernels and browser resources.                                                                                         |
 | Forced-exit cleanup | Orphaned scratch directories are removed during a later service start.                                                                                                         |
 
@@ -179,6 +211,17 @@ be inspected and later turns can continue from the same state. Different
 OpenCode sessions do not share kernels, browser bindings, or temporary remote
 profiles.
 
+Cancellation is cooperative when possible. Async crawls stop at inserted loop
+checkpoints after the currently awaited operation settles. Synchronous
+JavaScript is interrupted with `SIGINT` only when cooperative cancellation
+cannot be acknowledged. The kernel and state from earlier successful cells are
+preserved after either cancellation path.
+
+A never-settling native Promise can remain in the `cancelling` state. In that
+case, reset is the explicit last resort and destroys bindings, pages, contexts,
+and retained jobs. Cancellation does not roll back filesystem writes, network
+requests, page navigation, or other completed side effects.
+
 Persistent browser profiles are opt-in. When a user explicitly supplies a
 directory and asks to reuse it, the Playwright skill passes that exact
 directory to the selected browser startup. Without an explicit directory,
@@ -186,9 +229,10 @@ local and remote sessions use an ephemeral context. Browser profile directories
 are exclusive while in use; never delete lock files or profile data to work
 around a lock.
 
-Remote sessions use normal Playwright APIs for browser lifecycle, pages, tabs,
-popups, frames, shadow DOM and locators. The additional input layer only shapes
-pointer movement, clicks, scrolling and keyboard/form input.
+Local sessions use standard Chromium. Remote sessions use Camoufox through
+Playwright's Firefox APIs, with normal Playwright lifecycle, page, popup, frame,
+shadow DOM, and locator support. The additional input layer only shapes pointer
+movement, clicks, scrolling, and keyboard/form input.
 
 ## Security
 
@@ -199,8 +243,8 @@ network, child processes, and worker threads. An `allow` permission for
 
 ## Remove
 
-Remove the plugin entry and `js_repl` permission rule from your
-`opencode.json(c)`, then restart:
+Remove the plugin entry and the `js_repl` and `js_repl_reset` permission rules
+from your `opencode.json(c)`, then restart:
 
 ```sh
 opencode2 service restart

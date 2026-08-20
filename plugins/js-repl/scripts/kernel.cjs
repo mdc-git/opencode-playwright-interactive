@@ -779,6 +779,19 @@ function nextInternalBindingName() {
   return `__opencode_internal_commit_${internalBindingSalt}_${internalBindingCounter++}`
 }
 
+class ExecutionCancelledError extends Error {
+  constructor() {
+    super('JavaScript execution cancelled')
+    this.name = 'ExecutionCancelledError'
+  }
+}
+
+function throwIfExecutionCancelled() {
+  if (activeExecState?.cancelRequested) {
+    throw new ExecutionCancelledError()
+  }
+}
+
 function markExpression(names, marker) {
   return `(${marker}(${names.map((name) => JSON.stringify(name)).join(', ')}), undefined)`
 }
@@ -859,6 +872,80 @@ function instrumentCurrentBindings(code, ast, marker, completionMarker) {
   return applyReplacements(code, replacements)
 }
 
+function instrumentCancellation(code, ast, checkpoint) {
+  const loops = []
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') {
+      return
+    }
+
+    if (
+      [
+        'ForStatement',
+        'ForInStatement',
+        'ForOfStatement',
+        'WhileStatement',
+        'DoWhileStatement'
+      ].includes(value.type)
+    ) {
+      loops.push(value)
+    }
+
+    for (const child of Object.values(value)) {
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          visit(item)
+        }
+      } else {
+        visit(child)
+      }
+    }
+  }
+
+  visit(ast)
+  const replacements = []
+  for (const loop of loops) {
+    const { body } = loop
+    if (!body) {
+      continue
+    }
+
+    if (body.type === 'BlockStatement') {
+      replacements.push({
+        start: body.start + 1,
+        end: body.start + 1,
+        text: `;${checkpoint}();`,
+        kind: 'open'
+      })
+    } else {
+      replacements.push(
+        {
+          start: body.start,
+          end: body.start,
+          text: `{;${checkpoint}();`,
+          kind: 'open'
+        },
+        {
+          start: body.end,
+          end: body.end,
+          text: '}',
+          kind: 'close'
+        }
+      )
+    }
+  }
+
+  let output = code
+  for (const replacement of replacements.toSorted((a, b) => {
+    const startOrder = b.start - a.start
+    return startOrder || (a.kind === 'close' ? -1 : 1)
+  })) {
+    output = output.slice(0, replacement.start) + replacement.text + output.slice(replacement.end)
+  }
+
+  return output
+}
+
 function parseModuleSource(code, meriyah) {
   const options = {
     next: true,
@@ -903,8 +990,11 @@ function parseModuleSource(code, meriyah) {
 async function buildModuleSource(code) {
   const meriyah = await meriyahPromise
   const parsed = parseModuleSource(code, meriyah)
-  code = parsed.source
-  const { ast } = parsed
+  const checkpointName = nextInternalBindingName()
+  const cancellableSource = instrumentCancellation(parsed.source, parsed.ast, checkpointName)
+  const cancellable = parseModuleSource(cancellableSource, meriyah)
+  code = cancellable.source
+  const { ast } = cancellable
   const currentBindings = collectBindings(ast)
   const priorBindings = previousModule ? previousBindings : []
   const markCommittedName = nextInternalBindingName()
@@ -921,9 +1011,11 @@ async function buildModuleSource(code) {
     `const ${markCommittedName} = import.meta.__opencodeMarkCommitted;`,
     `const ${markPreludeName} = import.meta.__opencodeMarkPrelude;`,
     `const ${captureCompletionName} = import.meta.__opencodeCaptureCompletion;`,
+    `const ${checkpointName} = import.meta.__opencodeThrowIfCancelled;`,
     'delete import.meta.__opencodeMarkCommitted;',
     'delete import.meta.__opencodeMarkPrelude;',
-    'delete import.meta.__opencodeCaptureCompletion;'
+    'delete import.meta.__opencodeCaptureCompletion;',
+    'delete import.meta.__opencodeThrowIfCancelled;'
   ].join('\n')
   prelude += '\n'
   if (previousModule && priorBindings.length > 0) {
@@ -978,6 +1070,16 @@ function collectCommittedBindings(module, prior, current, explicitlyCommitted) {
     bindings: Array.from(merged, ([name, kind]) => ({ name, kind })),
     currentCount
   }
+}
+
+function shouldPreserveModule(input) {
+  const { module, isLinked, isPreludeCompleted, priorBindings, result, isInterrupted } = input
+  return (
+    !isInterrupted &&
+    module &&
+    isLinked &&
+    (result.currentCount > 0 || (isPreludeCompleted && priorBindings.length > 0))
+  )
 }
 
 const MODULE_CHAIN_COMPACT_INTERVAL = 50
@@ -1051,7 +1153,7 @@ function scheduleFatalExit(kind, error) {
         `${JSON.stringify({
           type: 'exec_result',
           id: activeExecId,
-          ok: false,
+          status: 'failed',
           output: '',
           error: message
         })}\n`
@@ -1145,11 +1247,14 @@ async function handleExec(message) {
     pendingImages: [],
     emittedText: [],
     outputBytes: 0,
-    logs: null
+    logs: null,
+    cancelRequested: false
   }
   activeExecState = execState
   let module = null
   let currentBindings = []
+  const previousModuleBeforeExec = previousModule
+  const previousBindingsBeforeExec = previousBindings
   let priorBindings = previousBindings
   let nextBindings = []
   let isLinked = false
@@ -1181,6 +1286,7 @@ async function handleExec(message) {
           identifier,
           initializeImportMeta(meta, current) {
             setImportMeta(meta, current, true)
+            meta.__opencodeThrowIfCancelled = throwIfExecutionCancelled
             meta.__opencodeMarkCommitted = (...names) => {
               for (const name of names) {
                 committed.add(name)
@@ -1225,13 +1331,16 @@ async function handleExec(message) {
             : loadLinkedNativeModule(resolved)
         })
         isLinked = true
-        await module.evaluate()
+        await module.evaluate({ breakOnSigint: true })
+        throwIfExecutionCancelled()
         if (completionPromise) {
           await completionPromise
+          throwIfExecutionCancelled()
         }
 
         if (execState.pendingImages.length > 0) {
           const imageResults = await Promise.all(execState.pendingImages)
+          throwIfExecutionCancelled()
           const unhandled = imageResults.find(
             (result) => !result.ok && !result.observation.observed
           )
@@ -1282,12 +1391,17 @@ async function handleExec(message) {
     send({
       type: 'exec_result',
       id: message.id,
-      ok: true,
+      status: 'completed',
       output,
-      attachments: execState.attachments,
-      error: null
+      attachments: execState.attachments
     })
   } catch (error) {
+    const isInterrupted = error?.code === 'ERR_SCRIPT_EXECUTION_INTERRUPTED'
+    if (isInterrupted) {
+      previousModule = previousModuleBeforeExec
+      previousBindings = previousBindingsBeforeExec
+    }
+
     const result = collectCommittedBindings(
       isLinked ? module : null,
       priorBindings,
@@ -1295,9 +1409,14 @@ async function handleExec(message) {
       committed
     )
     if (
-      module &&
-      isLinked &&
-      (result.currentCount > 0 || (isPreludeCompleted && priorBindings.length > 0))
+      shouldPreserveModule({
+        module,
+        isLinked,
+        isPreludeCompleted,
+        priorBindings,
+        result,
+        isInterrupted
+      })
     ) {
       previousModule = module
       previousBindings = result.bindings
@@ -1311,12 +1430,14 @@ async function handleExec(message) {
     // Preserve console/emitted text captured before the failure; those logs
     // are usually the most useful debugging evidence in an interactive session.
     const partialOutput = [...(execState.logs ?? []), ...execState.emittedText].join('\n')
+    const isCancelled =
+      error instanceof ExecutionCancelledError || execState.cancelRequested || isInterrupted
     send({
       type: 'exec_result',
       id: message.id,
-      ok: false,
+      status: isCancelled ? 'cancelled' : 'failed',
       output: partialOutput,
-      error: formatError(error)
+      ...(!isCancelled && { error: formatError(error) })
     })
   } finally {
     if (activeExecId === message.id) {
@@ -1358,6 +1479,12 @@ process.stdin.on('data', (chunk) => {
       const message = JSON.parse(line)
       if (message.type === 'exec') {
         queue = queue.then(() => handleExec(message))
+      } else if (message.type === 'cancel') {
+        if (activeExecState && activeExecId === message.id) {
+          activeExecState.cancelRequested = true
+        }
+
+        send({ type: 'cancel_ack', id: message.id })
       } else {
         reportNonFatal(
           'protocol',

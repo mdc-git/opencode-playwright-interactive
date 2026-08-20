@@ -36,8 +36,10 @@ async function execFileAsync(
 }
 
 const MIN_NODE_VERSION = [22, 22, 0] as const
-const DEFAULT_TIMEOUT_MS = 30_000
-const MAX_TIMEOUT_MS = 300_000
+const FOREGROUND_WAIT_MS = 30_000
+const JOB_WAIT_MS = 30_000
+const CANCEL_ACK_WAIT_MS = 250
+const MAX_RETAINED_TERMINAL_JOBS = 20
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_PROTOCOL_LINE_BYTES = 32 * 1024 * 1024
 const MERIYAH_VERSION = '7.0.0'
@@ -51,7 +53,34 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/we
 // self-contained within the plugin package.
 type Attachment = { type: 'file'; mime: string; url: string; filename?: string }
 type Result = { output: string; attachments: Attachment[] }
-type Pending = { id: string; resolve(result: Result): void; reject(error: Error): void }
+export type JobState = 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
+export type JobSnapshot = {
+  id: string
+  state: JobState
+  startedAt: string
+  finishedAt?: string
+  output?: string
+  attachments?: Attachment[]
+  error?: string
+}
+export type ExecuteOutcome =
+  | { kind: 'completed'; result: Result }
+  | { kind: 'background'; job: JobSnapshot }
+  | { kind: 'busy'; job: JobSnapshot }
+export type JobActionOutcome =
+  { kind: 'list'; jobs: JobSnapshot[] } | { kind: 'job'; job: JobSnapshot }
+type ReplJob = {
+  id: string
+  state: JobState
+  startedAt: number
+  finishedAt?: number
+  result?: Result
+  error?: Error
+  completion: Promise<void>
+  complete(): void
+  cancelAcknowledged: boolean
+  cancelFallback?: NodeJS.Timeout
+}
 type KernelProcess = ChildProcessWithoutNullStreams & {
   stdio: [
     NodeJS.WritableStream,
@@ -60,14 +89,16 @@ type KernelProcess = ChildProcessWithoutNullStreams & {
     NodeJS.ReadableStream
   ]
 }
-type Message = {
-  type: 'exec_result'
-  id: string
-  ok: boolean
-  output?: string
-  attachments?: unknown
-  error?: string | undefined
-}
+type Message =
+  | {
+      type: 'exec_result'
+      id: string
+      status: 'completed' | 'failed' | 'cancelled'
+      output?: string
+      attachments?: unknown
+      error?: string
+    }
+  | { type: 'cancel_ack'; id: string }
 
 const checkedNodes = new Map<string, Promise<void>>()
 
@@ -452,8 +483,8 @@ class ReplController {
   private readonly scriptDirectory: string
   private child?: KernelProcess
   private reader?: ReadLineInterface
-  private pending?: Pending
-  private queue: Promise<void> = Promise.resolve()
+  private activeJob?: ReplJob
+  private readonly jobs = new Map<string, ReplJob>()
   private stderrTail: string[] = []
   private stderrFragment = ''
   private scratch?: string
@@ -472,77 +503,131 @@ class ReplController {
     this.scriptDirectory = scriptDirectory
   }
 
-  private async enqueue<T>(operation: () => Promise<T>) {
-    const result = this.queue.then(operation).catch(operation)
-    this.queue = result.then(() => undefined).catch(() => undefined)
-    return result
+  private makeJob(id: string): ReplJob {
+    const { promise: completion, resolve: complete } = Promise.withResolvers<void>()
+    return {
+      id,
+      state: 'running',
+      startedAt: Date.now(),
+      completion,
+      complete,
+      cancelAcknowledged: false
+    }
   }
 
-  private async executeNow(code: string, timeoutMs: number) {
-    if (this.disposed) {
-      throw new Error('js_repl controller is disposed')
+  private snapshot(job: ReplJob, shouldIncludeResult = true): JobSnapshot {
+    const snapshot: JobSnapshot = {
+      id: job.id,
+      state: job.state,
+      startedAt: new Date(job.startedAt).toISOString(),
+      ...(job.finishedAt !== undefined && { finishedAt: new Date(job.finishedAt).toISOString() })
+    }
+    if (
+      shouldIncludeResult &&
+      (job.state === 'completed' || job.state === 'cancelled') &&
+      job.result
+    ) {
+      snapshot.output = job.result.output
+      snapshot.attachments = job.result.attachments
     }
 
-    const child = await this.ensure()
-    const id = `${this.sessionId}-${++this.request}`
-    return this.execOn(child, id, code, timeoutMs)
+    if (job.state === 'failed' && job.error) {
+      snapshot.error = job.error.message
+    }
+
+    return snapshot
   }
 
-  private async execOn(child: KernelProcess, id: string, code: string, timeoutMs: number) {
-    return new Promise<Result>((resolve, reject) => {
-      let isSettled = false
-      const finish = (error?: Error, result?: Result) => {
-        if (isSettled) {
+  private finishJob(
+    job: ReplJob,
+    state: 'completed' | 'failed' | 'cancelled',
+    value?: Result | Error
+  ) {
+    if (job.finishedAt !== undefined) {
+      return
+    }
+
+    if (state === 'failed') {
+      job.error = value instanceof Error ? value : new Error('js_repl execution failed')
+    } else if (value && !(value instanceof Error)) {
+      job.result = value
+    }
+
+    job.state = state
+    job.finishedAt = Date.now()
+    if (job.cancelFallback) {
+      clearTimeout(job.cancelFallback)
+      job.cancelFallback = undefined
+    }
+
+    if (this.activeJob === job) {
+      this.activeJob = undefined
+    }
+
+    job.complete()
+    this.pruneJobs()
+  }
+
+  private pruneJobs() {
+    let terminalCount = 0
+    for (const job of this.jobs.values()) {
+      if (job.finishedAt !== undefined) {
+        terminalCount += 1
+      }
+    }
+
+    if (terminalCount <= MAX_RETAINED_TERMINAL_JOBS) {
+      return
+    }
+
+    for (const [id, job] of this.jobs) {
+      if (job.finishedAt === undefined) {
+        continue
+      }
+
+      this.jobs.delete(id)
+      terminalCount -= 1
+      if (terminalCount <= MAX_RETAINED_TERMINAL_JOBS) {
+        return
+      }
+    }
+  }
+
+  private startJob(code: string): ReplJob {
+    const job = this.makeJob(`repl_${++this.request}`)
+    this.jobs.set(job.id, job)
+    this.activeJob = job
+    void (async () => {
+      try {
+        const child = await this.ensure()
+        if (this.disposed || this.activeJob !== job) {
+          await this.stop()
           return
         }
 
-        isSettled = true
-        clearTimeout(timer)
-        if (this.pending?.id === id) {
-          this.pending = undefined
-        }
-
-        if (error) {
-          reject(error)
-        } else {
-          resolve(result ?? { output: '', attachments: [] })
-        }
-      }
-
-      const abandon = (error: Error) => {
-        if (isSettled) {
+        if (job.state === 'cancelling') {
+          this.finishJob(job, 'cancelled', { output: '', attachments: [] })
           return
         }
 
-        if (this.pending?.id === id) {
-          this.pending = undefined
-        }
-
-        finish(error)
-      }
-
-      const timer = setTimeout(() => {
-        abandon(
-          new Error(
-            'js_repl execution timed out; kernel continues running and later calls will wait behind it'
-          )
+        child.stdin.write(
+          `${JSON.stringify({ type: 'exec', id: job.id, code })}\n`,
+          (error: unknown) => {
+            if (error !== null && error !== undefined) {
+              this.fail(
+                child,
+                new Error(`Failed to write to js_repl kernel: ${errorMessage(error)}`)
+              )
+            }
+          }
         )
-      }, timeoutMs)
-      this.pending = {
-        id,
-        resolve(result) {
-          finish(undefined, result)
-        },
-        reject(error) {
-          finish(error)
-        }
+      } catch (error: unknown) {
+        this.finishJob(job, 'failed', error instanceof Error ? error : new Error(String(error)))
       }
-      child.stdin.write(`${JSON.stringify({ type: 'exec', id, code })}\n`, (error) => {
-        if (error) {
-          this.fail(child, new Error(`Failed to write to js_repl kernel: ${error.message}`))
-        }
-      })
+    })().catch((error: unknown) => {
+      this.finishJob(job, 'failed', error instanceof Error ? error : new Error(String(error)))
     })
+    return job
   }
 
   private async prepareKernel(node: string) {
@@ -609,7 +694,7 @@ class ReplController {
   }
 
   private async ensure() {
-    if (this.child && !this.child.killed && this.child.exitCode === null) {
+    if (this.child && !hasChildExited(this.child)) {
       return this.child
     }
 
@@ -670,45 +755,65 @@ class ReplController {
       return
     }
 
-    if (message.type !== 'exec_result' || message.id !== this.pending?.id) {
+    const job = this.jobs.get(message.id)
+    if (!job) {
       return
     }
 
-    const { pending } = this
-    this.pending = undefined
-    this.processExecResult(pending, message)
+    if (message.type === 'cancel_ack') {
+      this.handleCancelAcknowledgement(job)
+      return
+    }
+
+    if (job.finishedAt !== undefined) {
+      return
+    }
+
+    this.handleExecutionResult(job, message)
   }
 
-  private processExecResult(pending: Pending, message: Message) {
-    if (!message.ok) {
-      // Logs captured before the failure are the most useful debugging
-      // evidence; surface a bounded excerpt with the error.
-      const partial =
-        typeof message.output === 'string' && message.output !== ''
-          ? `\nOutput before failure:\n${boundedUtf8(message.output, 8192)}`
-          : ''
-      const error = new Error(`${message.error ?? 'js_repl execution failed'}${partial}`)
-      if (message.error?.includes('kernel reset')) {
-        void this.stop().finally(() => {
-          pending.reject(error)
-        })
-      } else {
-        pending.reject(error)
-      }
+  private handleCancelAcknowledgement(job: ReplJob) {
+    job.cancelAcknowledged = true
+    if (job.cancelFallback) {
+      clearTimeout(job.cancelFallback)
+      job.cancelFallback = undefined
+    }
+  }
 
+  private handleExecutionResult(job: ReplJob, message: Extract<Message, { type: 'exec_result' }>) {
+    if (message.status === 'failed') {
+      this.handleExecutionFailure(job, message)
       return
     }
 
     try {
-      pending.resolve({
+      const result = {
         output: typeof message.output === 'string' ? message.output : '',
-        attachments: attachments(message.attachments)
-      })
+        attachments: message.status === 'cancelled' ? [] : attachments(message.attachments)
+      }
+      this.finishJob(job, message.status, result)
     } catch (error) {
       void this.stop().finally(() => {
-        pending.reject(error as Error)
+        this.finishJob(job, 'failed', error as Error)
       })
     }
+  }
+
+  private handleExecutionFailure(job: ReplJob, message: Extract<Message, { type: 'exec_result' }>) {
+    // Logs captured before the failure are the most useful debugging evidence.
+    const partial =
+      typeof message.output === 'string' && message.output !== ''
+        ? `\nOutput before failure:\n${boundedUtf8(message.output, 8192)}`
+        : ''
+    const error = new Error(`${message.error ?? 'js_repl execution failed'}${partial}`)
+    if (message.error?.includes('kernel reset')) {
+      void this.stop().finally(() => {
+        this.finishJob(job, 'failed', error)
+      })
+      return
+    }
+
+    this.finishJob(job, 'failed', error)
   }
 
   private handleStderr(chunk: string) {
@@ -748,9 +853,13 @@ class ReplController {
     this.detach(child)
     const status = code === null ? `signal=${signal ?? 'unknown'}` : `code=${code}`
     const diagnostics = this.stderrTail.length > 0 ? `; stderr: ${this.stderrTail.join(' | ')}` : ''
-    const { pending } = this
-    this.pending = undefined
-    pending?.reject(new Error(`js_repl kernel exited unexpectedly (${status})${diagnostics}`))
+    if (this.activeJob) {
+      this.finishJob(
+        this.activeJob,
+        'failed',
+        new Error(`js_repl kernel exited unexpectedly (${status})${diagnostics}`)
+      )
+    }
   }
 
   private fail(child: KernelProcess, error: Error) {
@@ -758,9 +867,12 @@ class ReplController {
       return
     }
 
-    const { pending } = this
-    this.pending = undefined
-    void this.stop().finally(() => pending?.reject(error))
+    const job = this.activeJob
+    void this.stop().finally(() => {
+      if (job) {
+        this.finishJob(job, 'failed', error)
+      }
+    })
   }
 
   private detach(child: KernelProcess) {
@@ -780,7 +892,7 @@ class ReplController {
     }
 
     this.detach(child)
-    if (child.exitCode !== null || child.killed) {
+    if (hasChildExited(child)) {
       return
     }
 
@@ -871,13 +983,111 @@ class ReplController {
     return this.directory === directory
   }
 
-  async execute(code: string, timeoutMs: number | undefined) {
+  async execute(code: string): Promise<ExecuteOutcome> {
     if (code.trim() === '') {
       throw new Error('code must contain JavaScript source')
     }
 
-    const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS
-    return this.enqueue(async () => this.executeNow(code, timeout))
+    if (this.disposed) {
+      throw new Error('js_repl controller is disposed')
+    }
+
+    if (this.activeJob && ['running', 'cancelling'].includes(this.activeJob.state)) {
+      return { kind: 'busy', job: this.snapshot(this.activeJob) }
+    }
+
+    const job = this.startJob(code)
+    const handoff = Promise.withResolvers<'timeout'>()
+    const handoffTimer = setTimeout(() => {
+      handoff.resolve('timeout')
+    }, FOREGROUND_WAIT_MS)
+    const outcome = await Promise.race([
+      job.completion.then(() => 'complete' as const),
+      handoff.promise
+    ])
+    clearTimeout(handoffTimer)
+
+    if (outcome === 'timeout') {
+      return { kind: 'background', job: this.snapshot(job) }
+    }
+
+    if (job.state === 'completed') {
+      return { kind: 'completed', result: job.result ?? { output: '', attachments: [] } }
+    }
+
+    if (job.state === 'cancelled') {
+      throw new Error('JavaScript execution cancelled')
+    }
+
+    throw job.error ?? new Error('js_repl execution failed')
+  }
+
+  listJobs(): JobSnapshot[] {
+    const jobs: ReplJob[] = []
+    for (const job of this.jobs.values()) {
+      jobs.push(job)
+    }
+
+    return jobs.toReversed().map((job) => this.snapshot(job, false))
+  }
+
+  getJob(id: string): JobSnapshot {
+    const job = this.jobs.get(id)
+    if (!job) {
+      throw new Error(`Unknown js_repl job: ${id}`)
+    }
+
+    return this.snapshot(job)
+  }
+
+  async waitForJob(id: string): Promise<JobSnapshot> {
+    const job = this.jobs.get(id)
+    if (!job) {
+      throw new Error(`Unknown js_repl job: ${id}`)
+    }
+
+    if (job.finishedAt === undefined) {
+      const wait = Promise.withResolvers<void>()
+      const waitTimer = setTimeout(wait.resolve, JOB_WAIT_MS)
+      await Promise.race([job.completion, wait.promise])
+      clearTimeout(waitTimer)
+    }
+
+    return this.snapshot(job)
+  }
+
+  async cancelJob(id: string): Promise<JobSnapshot> {
+    const job = this.jobs.get(id)
+    if (!job) {
+      throw new Error(`Unknown js_repl job: ${id}`)
+    }
+
+    if (job.finishedAt !== undefined) {
+      return this.snapshot(job)
+    }
+
+    if (job.state === 'running') {
+      job.state = 'cancelling'
+      const { child } = this
+      if (child && this.activeJob === job) {
+        child.stdin.write(`${JSON.stringify({ type: 'cancel', id: job.id })}\n`, (error) => {
+          if (error) {
+            this.fail(child, new Error(`Failed to write to js_repl kernel: ${error.message}`))
+          }
+        })
+        job.cancelFallback = setTimeout(() => {
+          if (
+            !job.cancelAcknowledged &&
+            this.activeJob === job &&
+            ['running', 'cancelling'].includes(job.state)
+          ) {
+            child.kill('SIGINT')
+          }
+        }, CANCEL_ACK_WAIT_MS)
+      }
+    }
+
+    return this.snapshot(job)
   }
 
   async dispose() {
@@ -886,9 +1096,10 @@ class ReplController {
     }
 
     this.disposed = true
-    const { pending } = this
-    this.pending = undefined
-    pending?.reject(new Error('js_repl controller disposed'))
+    if (this.activeJob) {
+      this.finishJob(this.activeJob, 'cancelled', this.activeJob.result)
+    }
+
     await this.stop()
     await this.removeScratch()
   }
@@ -901,9 +1112,10 @@ class ReplController {
   // profile) is removed either way.
   async disposeForShutdown() {
     this.disposed = true
-    const { pending } = this
-    this.pending = undefined
-    pending?.reject(new Error('js_repl controller disposed'))
+    if (this.activeJob) {
+      this.finishJob(this.activeJob, 'cancelled', this.activeJob.result)
+    }
+
     const { child } = this
     if (child) {
       this.detach(child)
@@ -915,7 +1127,7 @@ class ReplController {
 }
 
 async function terminateChild(child: KernelProcess) {
-  if (child.exitCode !== null || child.killed) {
+  if (hasChildExited(child)) {
     return
   }
 
@@ -944,14 +1156,14 @@ async function terminateChild(child: KernelProcess) {
 
 async function hasChildClosed(child: KernelProcess, ms: number) {
   return new Promise<boolean>((resolve) => {
-    if (child.exitCode !== null) {
+    if (hasChildExited(child)) {
       resolve(true)
       return
     }
 
     const timer = setTimeout(() => {
       child.off('close', onClose)
-      resolve(child.exitCode !== null)
+      resolve(hasChildExited(child))
     }, ms)
     const onClose = () => {
       clearTimeout(timer)
@@ -960,6 +1172,10 @@ async function hasChildClosed(child: KernelProcess, ms: number) {
 
     child.once('close', onClose)
   })
+}
+
+function hasChildExited(child: KernelProcess) {
+  return child.exitCode !== null || child.signalCode !== null
 }
 
 const SCRATCH_PREFIX = 'opencode-js-repl-'
@@ -1172,12 +1388,7 @@ export class ReplRuntime {
     sweepStaleScratchDirs().catch(() => undefined)
   }
 
-  async execute(
-    sessionID: string,
-    directory: string,
-    code: string,
-    timeoutMs = DEFAULT_TIMEOUT_MS
-  ) {
+  async execute(sessionID: string, directory: string, code: string) {
     if (this.disposed) {
       throw new Error('js_repl runtime is disposed')
     }
@@ -1194,7 +1405,38 @@ export class ReplRuntime {
       this.controllers.set(sessionID, controller)
     }
 
-    return controller.execute(code, timeoutMs)
+    return controller.execute(code)
+  }
+
+  listJobs(sessionID: string): JobActionOutcome {
+    return { kind: 'list', jobs: this.controllers.get(sessionID)?.listJobs() ?? [] }
+  }
+
+  getJob(sessionID: string, id: string): JobActionOutcome {
+    const controller = this.controllers.get(sessionID)
+    if (!controller) {
+      throw new Error('JavaScript REPL kernel was not initialized.')
+    }
+
+    return { kind: 'job', job: controller.getJob(id) }
+  }
+
+  async waitForJob(sessionID: string, id: string): Promise<JobActionOutcome> {
+    const controller = this.controllers.get(sessionID)
+    if (!controller) {
+      throw new Error('JavaScript REPL kernel was not initialized.')
+    }
+
+    return { kind: 'job', job: await controller.waitForJob(id) }
+  }
+
+  async cancelJob(sessionID: string, id: string): Promise<JobActionOutcome> {
+    const controller = this.controllers.get(sessionID)
+    if (!controller) {
+      throw new Error('JavaScript REPL kernel was not initialized.')
+    }
+
+    return { kind: 'job', job: await controller.cancelJob(id) }
   }
 
   async reset(sessionID: string) {
@@ -1241,8 +1483,3 @@ export class ReplRuntime {
     return `Shared Playwright ${PLAYWRIGHT_VERSION}, Camoufox ${CAMOUFOX_VERSION} and their browsers are ready at ${directory}.`
   }
 }
-
-export const limits = {
-  defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
-  maxTimeoutMs: MAX_TIMEOUT_MS
-} as const
