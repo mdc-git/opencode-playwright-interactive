@@ -40,7 +40,9 @@ const MIN_NODE_VERSION = [22, 22, 0] as const
 // foreground result instead of racing into a nearly-complete background job.
 const FOREGROUND_WAIT_MS = 35_000
 const JOB_WAIT_MS = 30_000
-const CANCEL_ACK_WAIT_MS = 250
+const MAX_JOB_RUNTIME_MS = 120_000
+const CANCEL_INTERRUPT_WAIT_MS = 250
+const CANCEL_RESTART_WAIT_MS = 1500
 const MAX_RETAINED_TERMINAL_JOBS = 20
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_PROTOCOL_LINE_BYTES = 32 * 1024 * 1024
@@ -80,8 +82,8 @@ type ReplJob = {
   error?: Error
   completion: Promise<void>
   complete(): void
-  cancelAcknowledged: boolean
   cancelFallback?: NodeJS.Timeout
+  runtimeFallback?: NodeJS.Timeout
 }
 type KernelProcess = ChildProcessWithoutNullStreams & {
   stdio: [
@@ -512,8 +514,7 @@ class ReplController {
       state: 'running',
       startedAt: Date.now(),
       completion,
-      complete,
-      cancelAcknowledged: false
+      complete
     }
   }
 
@@ -560,6 +561,11 @@ class ReplController {
     if (job.cancelFallback) {
       clearTimeout(job.cancelFallback)
       job.cancelFallback = undefined
+    }
+
+    if (job.runtimeFallback) {
+      clearTimeout(job.runtimeFallback)
+      job.runtimeFallback = undefined
     }
 
     if (this.activeJob === job) {
@@ -623,6 +629,21 @@ class ReplController {
             }
           }
         )
+        job.runtimeFallback = setTimeout(() => {
+          if (this.activeJob !== job || job.finishedAt !== undefined) {
+            return
+          }
+
+          void this.stop().finally(() => {
+            this.finishJob(
+              job,
+              'failed',
+              new Error(
+                `JavaScript execution exceeded ${MAX_JOB_RUNTIME_MS / 1000} seconds; the session kernel was restarted`
+              )
+            )
+          })
+        }, MAX_JOB_RUNTIME_MS)
       } catch (error: unknown) {
         this.finishJob(job, 'failed', error instanceof Error ? error : new Error(String(error)))
       }
@@ -763,7 +784,6 @@ class ReplController {
     }
 
     if (message.type === 'cancel_ack') {
-      this.handleCancelAcknowledgement(job)
       return
     }
 
@@ -772,14 +792,6 @@ class ReplController {
     }
 
     this.handleExecutionResult(job, message)
-  }
-
-  private handleCancelAcknowledgement(job: ReplJob) {
-    job.cancelAcknowledged = true
-    if (job.cancelFallback) {
-      clearTimeout(job.cancelFallback)
-      job.cancelFallback = undefined
-    }
   }
 
   private handleExecutionResult(job: ReplJob, message: Extract<Message, { type: 'exec_result' }>) {
@@ -856,11 +868,15 @@ class ReplController {
     const status = code === null ? `signal=${signal ?? 'unknown'}` : `code=${code}`
     const diagnostics = this.stderrTail.length > 0 ? `; stderr: ${this.stderrTail.join(' | ')}` : ''
     if (this.activeJob) {
-      this.finishJob(
-        this.activeJob,
-        'failed',
-        new Error(`js_repl kernel exited unexpectedly (${status})${diagnostics}`)
-      )
+      if (this.activeJob.state === 'cancelling') {
+        this.finishJob(this.activeJob, 'cancelled', { output: '', attachments: [] })
+      } else {
+        this.finishJob(
+          this.activeJob,
+          'failed',
+          new Error(`js_repl kernel exited unexpectedly (${status})${diagnostics}`)
+        )
+      }
     }
   }
 
@@ -1078,14 +1094,21 @@ class ReplController {
           }
         })
         job.cancelFallback = setTimeout(() => {
-          if (
-            !job.cancelAcknowledged &&
-            this.activeJob === job &&
-            ['running', 'cancelling'].includes(job.state)
-          ) {
-            child.kill('SIGINT')
+          if (this.activeJob !== job || job.state !== 'cancelling') {
+            return
           }
-        }, CANCEL_ACK_WAIT_MS)
+
+          child.kill('SIGINT')
+          job.cancelFallback = setTimeout(() => {
+            if (this.activeJob !== job || job.state !== 'cancelling') {
+              return
+            }
+
+            void this.stop().finally(() => {
+              this.finishJob(job, 'cancelled', { output: '', attachments: [] })
+            })
+          }, CANCEL_RESTART_WAIT_MS)
+        }, CANCEL_INTERRUPT_WAIT_MS)
       }
     }
 
