@@ -145,7 +145,13 @@ function formatJob(job: JobSnapshot) {
 }
 
 function buildJobResult(job: JobSnapshot) {
-  return buildResult({ output: formatJob(job), attachments: job.attachments ?? [] })
+  const activeGuidance = ['running', 'cancelling'].includes(job.state)
+    ? `\n\nThe job is still ${job.state}. Call js_repl_job with wait again when no other work is available, or status for an immediate snapshot. Do not submit another REPL cell.`
+    : ''
+  return buildResult({
+    output: formatJob(job) + activeGuidance,
+    attachments: job.attachments ?? []
+  })
 }
 
 function formatJobList(jobs: JobSnapshot[]) {
