@@ -36,7 +36,9 @@ async function execFileAsync(
 }
 
 const MIN_NODE_VERSION = [22, 22, 0] as const
-const FOREGROUND_WAIT_MS = 30_000
+// Leave headroom for Playwright's 30-second default timeout to settle as a
+// foreground result instead of racing into a nearly-complete background job.
+const FOREGROUND_WAIT_MS = 35_000
 const JOB_WAIT_MS = 30_000
 const CANCEL_ACK_WAIT_MS = 250
 const MAX_RETAINED_TERMINAL_JOBS = 20

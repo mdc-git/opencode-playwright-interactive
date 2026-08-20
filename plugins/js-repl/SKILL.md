@@ -307,3 +307,5 @@ if (typeof browser !== 'undefined') await browser.close().catch(() => {})
 ```
 
 After `js_repl_reset`, rerun setup and the complete startup block before interacting again.
+
+If an expected persistent binding such as `browser`, `context`, `page`, or `input` reports `Unknown identifier`, the REPL state was lost, commonly because a service restarted or an old session resumed. The agent **MUST** reload the `playwright-interactive` skill so it has current guidance, rerun setup, and execute one complete current startup block. It **MUST NOT** reconstruct a partial lifecycle from memory or stale tool output in the transcript. After recovery, Camoufox additional pages remain subject to the browser-originated `window.open()` requirement.
