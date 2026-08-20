@@ -8,7 +8,8 @@ import {
   ReplRuntime,
   type ExecuteOutcome,
   type JobActionOutcome,
-  type JobSnapshot
+  type JobSnapshot,
+  type RuntimeOptions
 } from './runtime.ts'
 
 const asToolError = (error: unknown) =>
@@ -60,6 +61,63 @@ type SessionGetter = (a: {
 }) => Effect.Effect<{ location: { directory: string } }, unknown>
 type ProgressFn = (a: { title: string } & Record<string, unknown>) => Effect.Effect<void>
 type ToolCtx = { sessionID: Session.ID; progress: ProgressFn }
+type RuntimeHolder = {
+  runtime: ReplRuntime
+  autoRoutedSessions: Set<string>
+  references: number
+  disposeTimer?: NodeJS.Timeout
+}
+type RuntimeGlobal = typeof globalThis & {
+  __opencodeJsReplRuntimes?: Map<string, RuntimeHolder>
+}
+
+const RUNTIME_DISPOSE_GRACE_MS = 5000
+const runtimeGlobal = globalThis as RuntimeGlobal
+const runtimeRegistry: Map<string, RuntimeHolder> =
+  runtimeGlobal.__opencodeJsReplRuntimes ?? new Map<string, RuntimeHolder>()
+runtimeGlobal.__opencodeJsReplRuntimes = runtimeRegistry
+
+function acquireRuntime(
+  options: RuntimeOptions,
+  scriptDirectory: string
+): { runtimeId: string; holder: RuntimeHolder } {
+  const runtimeId = `${scriptDirectory}\0${JSON.stringify(options)}`
+  let holder = runtimeRegistry.get(runtimeId)
+  if (holder === undefined) {
+    holder = {
+      runtime: new ReplRuntime(options, scriptDirectory),
+      autoRoutedSessions: new Set(),
+      references: 0
+    }
+    runtimeRegistry.set(runtimeId, holder)
+  }
+
+  if (holder.disposeTimer !== undefined) {
+    clearTimeout(holder.disposeTimer)
+    holder.disposeTimer = undefined
+  }
+
+  holder.references += 1
+  return { runtimeId, holder }
+}
+
+function releaseRuntime(runtimeId: string, holder: RuntimeHolder) {
+  holder.references = Math.max(0, holder.references - 1)
+  if (holder.references > 0 || holder.disposeTimer !== undefined) {
+    return
+  }
+
+  holder.disposeTimer = setTimeout(() => {
+    holder.disposeTimer = undefined
+    if (holder.references > 0 || runtimeRegistry.get(runtimeId) !== holder) {
+      return
+    }
+
+    runtimeRegistry.delete(runtimeId)
+    void holder.runtime.dispose()
+  }, RUNTIME_DISPOSE_GRACE_MS)
+  holder.disposeTimer.unref()
+}
 
 function shouldRouteToRepl(
   event: { tool: string; input: unknown; sessionID: string },
@@ -329,11 +387,9 @@ export default Plugin.define({
   id: 'local.js-repl',
   effect: Effect.fn(function* (context) {
     const pluginDir = fileURLToPath(new URL('.', import.meta.url))
-    const runtime = new ReplRuntime(
-      context.options,
-      fileURLToPath(new URL('scripts/', import.meta.url))
-    )
-    const autoRoutedSessions = new Set<string>()
+    const scriptDirectory = fileURLToPath(new URL('scripts/', import.meta.url))
+    const { runtimeId, holder: runtimeHolder } = acquireRuntime(context.options, scriptDirectory)
+    const { runtime, autoRoutedSessions } = runtimeHolder
     const skillBody = readFileSync(
       fileURLToPath(new URL('SKILL.md', import.meta.url)),
       'utf8'
@@ -370,6 +426,10 @@ export default Plugin.define({
       ),
       Effect.forkScoped
     )
-    yield* Effect.addFinalizer(() => Effect.promise(async () => runtime.dispose()))
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        releaseRuntime(runtimeId, runtimeHolder)
+      })
+    )
   })
 })
