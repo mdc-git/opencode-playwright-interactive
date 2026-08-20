@@ -68,17 +68,27 @@ var HEADLESS = false
 // Set only when the user explicitly supplies a profile directory.
 var PERSISTENT_PROFILE_DIR = undefined
 var camoufoxOptions = await launchOptions({ enable_cache: true })
+var firefoxUserPrefs = {
+  ...camoufoxOptions.firefoxUserPrefs,
+  'browser.link.open_newwindow': 3,
+  'browser.link.open_newwindow.restriction': 0
+}
 var browser
 var context
 if (PERSISTENT_PROFILE_DIR) {
   context = await core.firefox.launchPersistentContext(PERSISTENT_PROFILE_DIR, {
     ...camoufoxOptions,
+    firefoxUserPrefs,
     headless: HEADLESS,
     viewport: null
   })
   browser = context.browser()
 } else {
-  browser = await core.firefox.launch({ ...camoufoxOptions, headless: HEADLESS })
+  browser = await core.firefox.launch({
+    ...camoufoxOptions,
+    firefoxUserPrefs,
+    headless: HEADLESS
+  })
   context = await browser.newContext({ viewport: null })
 }
 var page = context.pages()[0]
@@ -174,7 +184,7 @@ Playwright locators pierce open shadow roots by default. Use `frameLocator()` or
 
 ### REQUIRED: Persistent Camoufox Additional Pages
 
-When the Remote Web startup uses `PERSISTENT_PROFILE_DIR`, the agent **MUST** use the persistent context's startup page and **MUST NOT** use `context.newPage()` to open an additional page. In persistent Camoufox/Firefox contexts, Playwright-created additional pages can fail to load while browser-originated pages in the same context work correctly. This restriction does not apply to Chromium or non-persistent contexts, where `context.newPage()` remains valid.
+The Remote Web startup configures Firefox's new-window behavior so browser-originated windows open as tabs in the existing visible browser window. When that startup uses `PERSISTENT_PROFILE_DIR`, the agent **MUST** use the persistent context's startup page, navigate that page to the first target, and **MUST NOT** use `context.newPage()` to open an additional page. In persistent Camoufox/Firefox contexts, Playwright-created additional pages do not reliably join the same visible browser window, while browser-originated pages in the same context do. This restriction does not apply to Chromium or non-persistent contexts, where `context.newPage()` remains valid.
 
 In a persistent Camoufox/Firefox context, when the workflow needs a programmatically opened page rather than a visible link or button, open it through the current page's `window.open()` and let Playwright observe the browser-created page:
 
@@ -185,9 +195,10 @@ var [additionalPage] = await Promise.all([
 ])
 await additionalPage.waitForLoadState('domcontentloaded')
 page = additionalPage
+;({ pageCount: context.pages().length, pages: context.pages().map((candidate) => candidate.url()) })
 ```
 
-For multiple pages, repeat this sequence from an existing loaded page so every page is browser-originated and remains in the same context. Do not issue multiple `window.open()` calls in one unproven batch.
+For multiple pages, repeat this sequence from an existing loaded page until `context.pages().length` equals the expected count. Verify the count and URLs after every `window.open()` so every page is browser-originated, remains in the same context, and appears as a tab in the same visible browser window. Do not issue multiple `window.open()` calls in one unproven batch.
 
 For a popup or new tab, let Playwright observe the event around the action:
 
