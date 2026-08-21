@@ -35,7 +35,7 @@ async function execFileAsync(
   })
 }
 
-const MIN_NODE_VERSION = [22, 22, 0] as const
+const MIN_NODE_VERSION = [22, 0, 0] as const
 // Leave headroom for Playwright's 30-second default timeout to settle as a
 // foreground result instead of racing into a nearly-complete background job.
 const FOREGROUND_WAIT_MS = 35_000
@@ -118,7 +118,7 @@ function parseVersion(value: string) {
   return [Number(major), Number(minor), Number(patch)] as const
 }
 
-function versionAtLeast(actual: readonly number[], minimum: readonly number[]) {
+function versionGreaterThan(actual: readonly number[], minimum: readonly number[]) {
   for (const [index, element] of minimum.entries()) {
     if (actual[index] > element) {
       return true
@@ -129,7 +129,7 @@ function versionAtLeast(actual: readonly number[], minimum: readonly number[]) {
     }
   }
 
-  return true
+  return false
 }
 
 async function checkNode(path: string) {
@@ -149,9 +149,9 @@ async function checkNode(path: string) {
       }
 
       const actual = parseVersion(stdout)
-      if (!versionAtLeast(actual, MIN_NODE_VERSION)) {
+      if (!versionGreaterThan(actual, MIN_NODE_VERSION)) {
         throw new Error(
-          `js_repl requires Node >=${MIN_NODE_VERSION.join('.')}; "${path}" is ${actual.join('.')}`
+          `js_repl requires Node >${MIN_NODE_VERSION.join('.')}; "${path}" is ${actual.join('.')}`
         )
       }
     })()

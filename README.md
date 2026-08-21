@@ -62,7 +62,7 @@ access policy and rate limits.
 ## Requirements
 
 - OpenCode V2
-- Node.js 22.22.0 or newer (spawned by the persistent REPL kernel; defaults to `node` on `PATH`, override with `nodePath`)
+- Node.js newer than 22.0.0 (spawned by the persistent REPL kernel; defaults to `node` on `PATH`, override with `nodePath`)
 - npm and npx (used to install Playwright, Chromium, and Camoufox on the first browser request; defaults to `npm`/`npx` on `PATH`, override with `npmPath`, `playwrightNpmPath`, `playwrightNpxPath`)
 
 ## Install
