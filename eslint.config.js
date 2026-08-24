@@ -83,14 +83,9 @@ export default defineConfig([
     }
   },
 
-  // The SDK-linked dependencies cannot use semver ranges or exact pins:
-  // - carets on a 0.0.x prerelease accept any prerelease of 0.0.0, and stale
-  //   pre-V2 builds (0.0.0-next-2026*, 0.0.0-opentui-*, 0.0.0-otui-diffs-*,
-  //   0.0.0-reserved.0, 0.0.0-windows-fix-*) sort above the whole modern next
-  //   stream, so fresh installs silently pick them and the plugin fails to load.
-  // - the "next" dist-tag is the only unambiguous resolution that tracks
-  //   updates, so no-dist-tag-dependencies is disabled for this file only.
-  // effect stays exact at 4.0.0-beta.101 to mirror the SDK's own pin.
+  // SDK-linked dependencies use the OpenCode beta dist-tag. Semver ranges on
+  // 0.0.x prereleases can resolve unrelated builds.
+  // effect stays exact to mirror the SDK's own pin.
   {
     files: ['package.json'],
     rules: {
