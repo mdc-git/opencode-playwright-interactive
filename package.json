@@ -45,5 +45,6 @@
     "knip": "^5.88.1",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3"
-  }
+  },
+  "//": "Keep OpenCode packages on beta; do not switch to next or caret ranges. Keep effect pinned to the beta SDK's exact version."
 }
