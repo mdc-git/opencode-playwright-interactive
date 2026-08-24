@@ -147,9 +147,16 @@ function routeToRepl(input: unknown, autoRoutedSessions: Set<string>, sessionID:
 const buildResult = (result: {
   output: string
   attachments: Array<{ url: string; mime: string; filename?: string }>
+  notice?: string
 }) => {
+  const noticeSuffix =
+    typeof result.notice === 'string' && result.notice !== '' ? `\n\n${result.notice}` : ''
   const text =
-    result.output === '' ? 'JavaScript executed successfully (no console output).' : result.output
+    noticeSuffix === ''
+      ? result.output === ''
+        ? 'JavaScript executed successfully (no console output).'
+        : result.output
+      : result.output + noticeSuffix
   const files = result.attachments.map((a) => {
     const hasFilename = a.filename !== undefined && a.filename !== ''
     return {

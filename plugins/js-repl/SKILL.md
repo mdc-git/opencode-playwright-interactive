@@ -117,6 +117,16 @@ appWindow.setDefaultTimeout(10000)
 
 Electron uses normal Playwright input and never loads humanized web input.
 
+## REPL Authoring Rules
+
+The persistent kernel keeps top-level bindings across cells. Author cells to reuse existing state rather than rebuild it, and keep the shared binding scope clean.
+
+- **Prefer reusing handles over re-creating them.** `browser`, `context`, `page`, `input`, `electronApp`, `appWindow`, `fs`, `path`, and any helper you assigned in a prior cell persist into the next one. Reference them directly instead of launching a new browser, importing a module again, or recomputing a value that already exists. Re-running a declaration like `const fs = await import('node:fs')` re-creates the binding on purpose when you mean to, but re-declaring a name you only meant to reuse is a needless `Identifier 'X' has already been declared` error. If a value is missing or stale, reassign the existing name (`page = await context.newPage()`) rather than introducing a parallel one.
+- **Reuse — do not accumulate — shared state.** Every top-level binding lives for the whole session and is re-imported into every later cell, so each name you add is ongoing pollution the agent must track. Do not declare a helper, counter, scratch object, or intermediate result at the top level when a local variable inside a block or a single returned expression would do. Scope work to the cell: prefer `const x = ...` used immediately and returned, or wrap a multi-step computation in a block (`{ ... }`) or an IIFE so its temporaries never enter the shared scope. Reuse the one browser/context/page trio across the task rather than opening extras; close and null out a handle only when its lifecycle is truly over.
+- **Use `await import(...)`, never `eval("…import…")`.** `import` is a module-level declaration; wrapping it in `eval` throws `Unexpected token 'import'`. Use a static `await import('playwright')` at the top of the cell, or `const mod = await import(specifier)` when the specifier is dynamic.
+- **It is a Node kernel, not a browser.** `location`, `document`, `window`, `navigator`, and `localStorage` are not defined. Reach the DOM through Playwright: `await page.evaluate(() => location.href)` or `await page.locator(...)`. Use `opencode.tmpDir`/`opencode.cwd` (Node paths) for filesystem work, not browser URLs.
+- **Keep cells small and one-purpose.** A long single-line expression built by concatenation (regexes, nested `map`/`filter`, multiple `=>` arrows) is the main source of `Expected '}' / ']' / ')'` and `missing ) after argument list` parse errors. Split it across lines and statements; the kernel preserves bindings between calls, so you do not lose state by splitting.
+
 ## Persistent Profiles
 
 Profile persistence is opt-in. Set `PERSISTENT_PROFILE_DIR` only when the user explicitly asks to reuse a profile and supplies the exact directory. Otherwise use `browser.launch()` followed by `browser.newContext()`.

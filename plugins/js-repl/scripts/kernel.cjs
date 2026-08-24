@@ -1019,14 +1019,25 @@ async function buildModuleSource(code) {
   ].join('\n')
   prelude += '\n'
   if (previousModule && priorBindings.length > 0) {
-    prelude += 'import * as __prev from "@prev";\n'
-    prelude += priorBindings
-      .map((binding) => {
-        const keyword = binding.kind === 'var' ? 'var' : binding.kind === 'const' ? 'const' : 'let'
-        return `${keyword} ${binding.name} = __prev.${binding.name};`
-      })
-      .join('\n')
-    prelude += '\n'
+    // A persistent REPL must tolerate re-running a cell that re-declares a
+    // name from a prior cell (e.g. re-launching `browser` or re-importing
+    // `fs`). The prelude re-imports prior bindings so later cells can reuse
+    // them, but re-importing a name this cell also declares would collide
+    // ("Identifier 'X' has already been declared"). Skip those: the current
+    // cell's own declaration stands and is what gets exported onward, so
+    // the binding chain still propagates the new value to future cells.
+    const redeclared = new Set(currentBindings.map((binding) => binding.name))
+    const imported = priorBindings.filter((binding) => !redeclared.has(binding.name))
+    if (imported.length > 0) {
+      prelude += 'import * as __prev from "@prev";\n'
+      prelude += imported
+        .map((binding) => {
+          const keyword = binding.kind === 'var' ? 'var' : binding.kind === 'const' ? 'const' : 'let'
+          return `${keyword} ${binding.name} = __prev.${binding.name};`
+        })
+        .join('\n')
+      prelude += '\n'
+    }
   }
 
   prelude += `${markPreludeName}();\n`
@@ -1388,12 +1399,27 @@ async function handleExec(message) {
       reportNonFatal('binding snapshot', snapshotError)
     }
 
+    // Per-cell scope-pollution notice: how many NEW top-level names this cell
+    // introduced versus what already persisted. Fires only on a real dump of
+    // new bindings, not on reuse, so it cannot nag ad infinitum — once the
+    // agent stops adding scratch state, newCount drops to ~0 and it goes quiet.
+    const NEW_BINDING_NOTICE_THRESHOLD = 8
+    const priorNames = new Set(priorBindings.map((binding) => binding.name))
+    const newBindingCount = currentBindings.filter(
+      (binding) => !priorNames.has(binding.name)
+    ).length
+    const notice =
+      newBindingCount >= NEW_BINDING_NOTICE_THRESHOLD
+        ? `This cell added ${newBindingCount} new top-level binding(s) to the session. Reuse existing handles (browser/context/page/fs) and scope temporaries inside blocks or IIFEs to avoid polluting the persistent REPL scope.`
+        : undefined
+
     send({
       type: 'exec_result',
       id: message.id,
       status: 'completed',
       output,
-      attachments: execState.attachments
+      attachments: execState.attachments,
+      ...(notice !== undefined && { notice })
     })
   } catch (error) {
     const isInterrupted = error?.code === 'ERR_SCRIPT_EXECUTION_INTERRUPTED'
