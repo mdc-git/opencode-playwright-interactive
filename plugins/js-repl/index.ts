@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { Plugin, type Skill } from '@opencode-ai/plugin/effect'
+import type { CommandDefinition } from '@opencode-ai/plugin/effect/command'
 import type { Session } from '@opencode-ai/schema'
 import { Error as ToolError } from '@opencode-ai/schema/tool'
 import { Effect, Stream } from 'effect'
@@ -380,14 +381,11 @@ function applyToolTransform(
   })
 }
 
-function applyCommandTransform(commands: {
-  update(name: string, fn: (command: unknown) => void): void
-}) {
-  commands.update('playwright', (command) => {
-    const target = command as { description: string; template: string }
-    target.description = PLUGIN_DESC
-    target.template = PLUGIN_TEMPLATE
-  })
+function applyCommandTransform(
+  commands: { add(command: CommandDefinition): void },
+  execute: CommandDefinition['execute']
+) {
+  commands.add({ name: 'playwright', description: PLUGIN_DESC, execute })
 }
 
 export default Plugin.define({
@@ -410,7 +408,18 @@ export default Plugin.define({
       applyToolTransform(tools, runtime, context.session.get)
     })
     yield* context.command.transform((commands) => {
-      applyCommandTransform(commands)
+      applyCommandTransform(commands, ({ sessionID, prompt, delivery }) =>
+        context.session
+          .prompt({
+            [key('sessionID')]: sessionID,
+            text: `${PLUGIN_TEMPLATE}\n\n${prompt.text}`,
+            files: prompt.files,
+            agents: prompt.agents,
+            skills: [...(prompt.skills ?? []), { id: 'playwright-interactive' as Skill.ID }],
+            delivery
+          })
+          .pipe(Effect.asVoid)
+      )
     })
 
     yield* context.tool.hook('execute.before', (event) => {
