@@ -380,6 +380,16 @@ function applyToolTransform(
   })
 }
 
+function applyCommandTransform(commands: {
+  update(name: string, fn: (command: unknown) => void): void
+}) {
+  commands.update('playwright', (command) => {
+    const target = command as { description: string; template: string }
+    target.description = PLUGIN_DESC
+    target.template = PLUGIN_TEMPLATE
+  })
+}
+
 export default Plugin.define({
   id: 'local.js-repl',
   effect: Effect.fn(function* (context) {
@@ -400,19 +410,7 @@ export default Plugin.define({
       applyToolTransform(tools, runtime, context.session.get)
     })
     yield* context.command.transform((commands) => {
-      commands.add({
-        name: 'playwright',
-        description: PLUGIN_DESC,
-        execute: ({ sessionID, prompt, delivery }) =>
-          context.session
-            .prompt({
-              ...prompt,
-              sessionID,
-              text: `${PLUGIN_TEMPLATE}\n\n${prompt.text}`,
-              delivery
-            })
-            .pipe(Effect.asVoid)
-      })
+      applyCommandTransform(commands)
     })
 
     yield* context.tool.hook('execute.before', (event) => {
