@@ -33,7 +33,7 @@ const executeInput = {
       type: 'string',
       minLength: 1,
       description:
-        'Plain Node.js source for the REPL. Call this tool by the name `js_repl` (the catalog may list it namespaced as `tools.js_repl` — that is the same tool, and `js_repl` is the name to emit). From Code Mode, prefer sending this source directly as execute code so the plugin can route and escape it safely instead of nesting a js_repl(...) call.'
+        "Plain Node.js source for the REPL. This is a Code Mode catalog tool, not a direct assistant tool: never emit a top-level `js_repl` call. For normal REPL work, send this source unchanged as the `execute` tool's `code`; the plugin routes it. `tools.js_repl` exists only inside `execute`, and wrapping normal cells in it adds a fragile second JavaScript parsing layer."
     }
   },
   required: ['code'],
@@ -315,7 +315,7 @@ const makeSetupExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext
   })
 
 const REPL_DESC =
-  "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. Call this tool by the name `js_repl` — the catalog may display it namespaced as `tools.js_repl`, but that is the same tool and `js_repl` is the name to emit; it is available to subagents with broad tool access (including the `general` agent). In Code Mode, send plain JavaScript directly as execute code instead of nesting a js_repl(...) call; the plugin routes and escapes direct source safely. The final expression value is returned automatically when it is not undefined; console.log is unnecessary for a value such as 2 + 2. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). Quick cells return normally. A cell still running after the internal foreground window continues as a background job without an automatic wall-clock limit; use js_repl_job to inspect, wait for, or cancel it. While a job is active, new cells are rejected as busy rather than queued. Cancellation escalates to restarting only the session kernel when native work does not return. Reset is the last resort for work that cannot be cancelled safely. This is a trusted local-code runtime, not a sandbox."
+  "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. This is a Code Mode-only tool: never emit `js_repl` as a direct assistant tool call. For a normal REPL cell, call `execute` with plain JavaScript in its `code` input; the plugin routes it automatically. Do not nest the source in `tools.js_repl({ code: ... })`, especially not in a template literal. `tools.js_repl` is only the Code Mode spelling inside `execute`. Call js_repl_playwright_setup, js_repl_job, and js_repl_reset inside execute as `tools.js_repl_playwright_setup(...)`, `tools.js_repl_job(...)`, and `tools.js_repl_reset(...)`; never call those controls directly either. The final expression value is returned automatically when it is not undefined; console.log is unnecessary for a value such as 2 + 2. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). Quick cells return normally. A cell still running after the internal foreground window continues as a background job without an automatic wall-clock limit; use js_repl_job to inspect, wait for, or cancel it. While a job is active, new cells are rejected as busy rather than queued. Cancellation escalates to restarting only the session kernel when native work does not return. Reset is the last resort for work that cannot be cancelled safely. This is a trusted local-code runtime, not a sandbox."
 
 const SKILL_DESC =
   'Persistent Playwright browser and Electron QA through js_repl, with standard Playwright Chromium for local apps and Camoufox plus humanized input for remote websites. Use when opening, debugging, testing, or visually inspecting local web apps, responsive interfaces, remote websites, or Electron applications.'
@@ -323,7 +323,7 @@ const SKILL_DESC =
 const PLUGIN_DESC =
   'Open a persistent Playwright browser or Electron session for interactive QA. Pass a target URL, app path, or task description.'
 const PLUGIN_TEMPLATE =
-  'Use the playwright-interactive skill to handle this request. Run js_repl_playwright_setup first, then send plain browser JavaScript directly through execute without nesting a js_repl(...) call. Select the correct startup mode, use Playwright for browser lifecycle and locators, and use humanized input only for remote-site interactions.'
+  'Use the playwright-interactive skill to handle this request. All js_repl tools are Code Mode-only: never emit them as direct tool calls. First use execute with `return await tools.js_repl_playwright_setup({})`. Then send each browser cell as plain JavaScript directly through execute, without wrapping it in tools.js_repl(...). Use tools.js_repl_job(...) and tools.js_repl_reset(...) only inside execute. Select the correct startup mode, use Playwright for browser lifecycle and locators, and use humanized input only for remote-site interactions.'
 
 function applySkillTransform(
   skills: { add(skill: unknown): void },
@@ -355,7 +355,7 @@ function applyToolTransform(
   tools.add({
     name: 'js_repl_job',
     description:
-      'Inspect, wait briefly for, or cancel controller-managed JavaScript REPL jobs. Job actions remain responsive while the session kernel is busy. Cancellation may restart only this session kernel when native work does not return.',
+      'Code Mode-only REPL job control. Call it from execute as `tools.js_repl_job(...)`, never as a direct assistant tool. Inspect, wait briefly for, or cancel controller-managed JavaScript REPL jobs. Job actions remain responsive while the session kernel is busy. Cancellation may restart only this session kernel when native work does not return.',
     input: jobInput,
     output: textOutput,
     options: { permission: 'js_repl' },
@@ -364,7 +364,7 @@ function applyToolTransform(
   tools.add({
     name: 'js_repl_reset',
     description:
-      'Reset the persistent JavaScript kernel for the current OpenCode session, clearing all bindings and imported state.',
+      'Code Mode-only REPL control. Call it from execute as `tools.js_repl_reset({})`, never as a direct assistant tool. Reset the persistent JavaScript kernel for the current OpenCode session, clearing all bindings and imported state.',
     input: resetInput,
     output: textOutput,
     options: { permission: 'js_repl_reset' },
@@ -373,7 +373,7 @@ function applyToolTransform(
   tools.add({
     name: 'js_repl_playwright_setup',
     description:
-      'Install Playwright and Camoufox with their matching browsers once in the shared OpenCode cache for use by js_repl across all workspaces.',
+      'Code Mode-only REPL control. Call it from execute as `tools.js_repl_playwright_setup({})`, never as a direct assistant tool. Install Playwright and Camoufox with their matching browsers once in the shared OpenCode cache for use by js_repl across all workspaces.',
     input: setupInput,
     output: textOutput,
     options: { permission: 'js_repl' },
