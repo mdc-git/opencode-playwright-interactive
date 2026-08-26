@@ -33,7 +33,7 @@ const executeInput = {
       type: 'string',
       minLength: 1,
       description:
-        'Plain Node.js source for the REPL. From Code Mode, prefer sending this source directly as execute code so the plugin can route and escape it safely instead of nesting tools.js_repl calls.'
+        'Plain Node.js source for the REPL. Call this tool by the name `js_repl` (the catalog may list it namespaced as `tools.js_repl` — that is the same tool, and `js_repl` is the name to emit). From Code Mode, prefer sending this source directly as execute code so the plugin can route and escape it safely instead of nesting a js_repl(...) call.'
     }
   },
   required: ['code'],
@@ -315,7 +315,7 @@ const makeSetupExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext
   })
 
 const REPL_DESC =
-  "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. In Code Mode, send plain JavaScript directly as execute code instead of nesting a tools.js_repl(...) call; the plugin routes and escapes direct source safely. The final expression value is returned automatically when it is not undefined; console.log is unnecessary for a value such as 2 + 2. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). Quick cells return normally. A cell still running after the internal foreground window continues as a background job without an automatic wall-clock limit; use js_repl_job to inspect, wait for, or cancel it. While a job is active, new cells are rejected as busy rather than queued. Cancellation escalates to restarting only the session kernel when native work does not return. Reset is the last resort for work that cannot be cancelled safely. This is a trusted local-code runtime, not a sandbox."
+  "Execute JavaScript in a persistent, session-isolated Node.js kernel with top-level await. Call this tool by the name `js_repl` — the catalog may display it namespaced as `tools.js_repl`, but that is the same tool and `js_repl` is the name to emit; it is available to subagents with broad tool access (including the `general` agent). In Code Mode, send plain JavaScript directly as execute code instead of nesting a js_repl(...) call; the plugin routes and escapes direct source safely. The final expression value is returned automatically when it is not undefined; console.log is unnecessary for a value such as 2 + 2. Top-level bindings persist until js_repl_reset. Use require(...) or dynamic imports such as await import('node:path'), attach images with await opencode.emitImage({ bytes, mimeType, filename? }), or add diagnostic text with await opencode.emitText({ text }). Quick cells return normally. A cell still running after the internal foreground window continues as a background job without an automatic wall-clock limit; use js_repl_job to inspect, wait for, or cancel it. While a job is active, new cells are rejected as busy rather than queued. Cancellation escalates to restarting only the session kernel when native work does not return. Reset is the last resort for work that cannot be cancelled safely. This is a trusted local-code runtime, not a sandbox."
 
 const SKILL_DESC =
   'Persistent Playwright browser and Electron QA through js_repl, with standard Playwright Chromium for local apps and Camoufox plus humanized input for remote websites. Use when opening, debugging, testing, or visually inspecting local web apps, responsive interfaces, remote websites, or Electron applications.'
@@ -323,7 +323,7 @@ const SKILL_DESC =
 const PLUGIN_DESC =
   'Open a persistent Playwright browser or Electron session for interactive QA. Pass a target URL, app path, or task description.'
 const PLUGIN_TEMPLATE =
-  'Use the playwright-interactive skill to handle this request. Run js_repl_playwright_setup first, then send plain browser JavaScript directly through execute without nesting tools.js_repl calls. Select the correct startup mode, use Playwright for browser lifecycle and locators, and use humanized input only for remote-site interactions.'
+  'Use the playwright-interactive skill to handle this request. Run js_repl_playwright_setup first, then send plain browser JavaScript directly through execute without nesting a js_repl(...) call. Select the correct startup mode, use Playwright for browser lifecycle and locators, and use humanized input only for remote-site interactions.'
 
 function applySkillTransform(
   skills: { add(skill: unknown): void },
