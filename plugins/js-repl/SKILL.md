@@ -34,7 +34,7 @@ After setup, the agent **MUST** send each browser REPL cell as plain JavaScript 
 
 `js_repl_playwright_setup`, `js_repl_job`, and `js_repl_reset` are explicit Code Mode calls only within `execute`, as shown above. Browser startup, inspection, and interaction cells do not need an inner tool call.
 
-Long cells require no wrapper or timeout option. If `js_repl` returns a job ID, use `js_repl_job` with `wait` when no other work is available, `status` for an immediate snapshot, and `cancel` to request cancellation. Do not submit another JavaScript cell while the kernel reports an active job. Long-running cells have no automatic wall-clock limit and may remain as background jobs while they make progress. Cancellation starts cooperatively, then interrupts the session kernel and restarts only that kernel if a native operation does not return; escalation loses that session's bindings and browser handles but does not restart OpenCode or affect other sessions. Use `js_repl_reset` only when losing bindings and browser handles is acceptable. Each `wait` observes for roughly five seconds and does not stop or restart the job; if it still reports an active state, call `wait` again when no other work is available.
+Long cells require no wrapper or timeout option. If `js_repl` returns a job ID, use `js_repl_job` with `wait` when no other work is available, `status` for an immediate snapshot, and `cancel` to request cancellation. Do not submit another JavaScript cell while the kernel reports an active job. Long-running cells have no automatic wall-clock limit and may remain as background jobs while they make progress; the foreground handoff occurs after 35 seconds. Cancellation is cooperative when possible. A short synchronous evaluation may be interrupted, but `wait` only observes a job and does not cancel a native promise. If native work does not return, cancellation can force termination of the session kernel; this loses that session's bindings and browser handles but does not restart OpenCode or affect other sessions. After forced kernel loss, the next execution must rerun setup and the complete startup block. Use `js_repl_reset` only when losing bindings and browser handles is acceptable. Each `wait` observes for up to five seconds and does not stop or restart the job; if it still reports an active state, call `wait` again when no other work is available.
 
 This avoids nesting JavaScript source inside another template literal. If `execute` reports `Failed to parse TypeScript`, the cell did not reach `js_repl`; correct the outer JavaScript syntax and retry the same small cell without resetting the kernel.
 
@@ -43,7 +43,7 @@ Select exactly one startup mode. A local URL uses standard Chromium, a remote UR
 ### Local Web
 
 ```js
-var playwright = await import('playwright')
+var playwright = require('playwright')
 var chromium = playwright.chromium
 var HEADLESS = false
 // Set only when the user explicitly supplies a profile directory.
@@ -71,8 +71,8 @@ Local web uses normal Playwright input. Do not load the humanized input module.
 Remote web defaults to a non-persistent context. The agent **MUST** execute this lifecycle in the documented order: `firefox.launch()` returns a `Browser`, `browser.newContext()` returns a `BrowserContext`, and `context.newPage()` creates the one allowed bootstrap page. It **MUST NOT** swap the `browser` and `context` assignment targets or call `context.browser()` in this mode.
 
 ```js
-var core = await import('playwright-core')
-var { launchOptions } = await import('camoufox-js')
+var core = require('playwright-core')
+var { launchOptions } = require('camoufox-js')
 var path = await import('node:path')
 var { pathToFileURL } = await import('node:url')
 var HEADLESS = false
@@ -115,7 +115,7 @@ if (!page) throw new Error('Persistent context opened without a startup page')
 ### Electron
 
 ```js
-var playwright = await import('playwright')
+var playwright = require('playwright')
 var electronLauncher = playwright._electron
 var ELECTRON_ENTRY = '.'
 var electronApp = await electronLauncher.launch({ args: [ELECTRON_ENTRY] })
@@ -128,11 +128,13 @@ Electron uses normal Playwright input and never loads humanized web input.
 
 ## REPL Authoring Rules
 
-The persistent kernel keeps top-level bindings across cells. Author cells to reuse existing state rather than rebuild it, and keep the shared binding scope clean.
+The persistent kernel uses Node's built-in REPL evaluator and keeps top-level bindings across cells. Author cells to reuse existing state rather than rebuild it, and keep the shared binding scope clean.
 
-- **Prefer reusing handles over re-creating them.** `browser`, `context`, `page`, `input`, `electronApp`, `appWindow`, `fs`, `path`, and any helper you assigned in a prior cell persist into the next one. Reference them directly instead of launching a new browser, importing a module again, or recomputing a value that already exists. Re-running a declaration like `const fs = await import('node:fs')` re-creates the binding on purpose when you mean to, but re-declaring a name you only meant to reuse is a needless `Identifier 'X' has already been declared` error. If a value is missing or stale, reassign the existing name (`page = await context.newPage()`) rather than introducing a parallel one.
-- **Reuse — do not accumulate — shared state.** Every top-level binding lives for the whole session and is re-imported into every later cell, so each name you add is ongoing pollution the agent must track. Do not declare a helper, counter, scratch object, or intermediate result at the top level when a local variable inside a block or a single returned expression would do. Scope work to the cell: prefer `const x = ...` used immediately and returned, or wrap a multi-step computation in a block (`{ ... }`) or an IIFE so its temporaries never enter the shared scope. Reuse the one browser/context/page trio across the task rather than opening extras; close and null out a handle only when its lifecycle is truly over.
-- **Use `await import(...)`, never `eval("…import…")`.** `import` is a module-level declaration; wrapping it in `eval` throws `Unexpected token 'import'`. Use a static `await import('playwright')` at the top of the cell, or `const mod = await import(specifier)` when the specifier is dynamic.
+- **Use `var` for persistent handles.** `var` bindings persist and may be reassigned or redeclared across cells. `let` and `const` also persist, but normal Node lexical rules apply: redeclaring either name in a later cell raises a `SyntaxError` such as `Identifier 'X' has already been declared`. Reassign an existing `var` handle (`page = await context.newPage()`) rather than introducing a parallel one.
+- **Prefer reusing handles over re-creating them.** `browser`, `context`, `page`, `input`, `electronApp`, `appWindow`, `fs`, `path`, and any helper you assigned in a prior cell persist into the next one. Reference them directly instead of launching a new browser, importing a module again, or recomputing a value that already exists. If a value is missing or stale, reassign the existing name rather than introducing a parallel one.
+- **Reuse — do not accumulate — shared state.** Every top-level binding lives for the whole session, so each name you add is ongoing pollution the agent must track. Do not declare a helper, counter, scratch object, or intermediate result at the top level when a local variable inside a block or a single returned expression would do. Scope work to the cell: prefer a local `const x = ...` used immediately and returned, or wrap a multi-step computation in a block (`{ ... }`) or an IIFE so its temporaries never enter the shared scope. Reuse the one browser/context/page trio across the task rather than opening extras; close and null out a handle only when its lifecycle is truly over.
+- **Use `require()` or dynamic import, never a static import declaration.** Static `import ... from ...` declarations are unsupported by the Node REPL evaluator. Use `require()` for Node built-ins and workspace or shared-cache packages. Use `await import(...)` for built-ins or local ESM files addressed by an explicit `file:` URL; never wrap it in `eval("…import…")`. `NODE_PATH` supports CommonJS `require()` resolution and is not a promise of bare dynamic package imports.
+- **Respect Node's module cache.** Node's `require()` and dynamic `import()` caches are authoritative and are not automatically invalidated when a file changes. Reset the kernel before expecting an edited imported ESM module to execute again, then rerun setup and the complete startup block.
 - **It is a Node kernel, not a browser.** `location`, `document`, `window`, `navigator`, and `localStorage` are not defined. Reach the DOM through Playwright: `await page.evaluate(() => location.href)` or `await page.locator(...)`. Use `opencode.tmpDir`/`opencode.cwd` (Node paths) for filesystem work, not browser URLs.
 - **Keep cells small and one-purpose.** A long single-line expression built by concatenation (regexes, nested `map`/`filter`, multiple `=>` arrows) is the main source of `Expected '}' / ']' / ')'` and `missing ) after argument list` parse errors. Split it across lines and statements; the kernel preserves bindings between calls, so you do not lose state by splitting.
 
@@ -306,7 +308,7 @@ await page.goBack()
 var pages = context.pages()
 ```
 
-Humanized typing is intentionally slower. Long input cells automatically continue as background jobs when they exceed the internal foreground window; use `js_repl_job` to wait for or inspect them.
+Humanized typing is intentionally slower. Long input cells automatically continue as background jobs when they exceed the 35-second foreground window; use `js_repl_job` to wait for or inspect them.
 
 ## Navigation And Inspection
 
@@ -325,6 +327,6 @@ if (typeof browser !== 'undefined') await browser.close().catch(() => {})
 ;('Playwright session closed')
 ```
 
-After `js_repl_reset`, rerun setup and the complete startup block before interacting again.
+After `js_repl_reset` or forced kernel termination, rerun setup and the complete startup block before interacting again.
 
-If an expected persistent binding such as `browser`, `context`, `page`, or `input` reports `Unknown identifier`, the REPL state was lost, commonly because a service restarted or an old session resumed. The agent **MUST** reload the `playwright-interactive` skill so it has current guidance, rerun setup, and execute one complete current startup block. It **MUST NOT** reconstruct a partial lifecycle from memory or stale tool output in the transcript. After recovery, Camoufox additional pages remain subject to the browser-originated `window.open()` requirement.
+If an expected persistent binding such as `browser`, `context`, `page`, or `input` reports `Unknown identifier`, the REPL state was lost, commonly because a service restarted, an old session resumed, or cancellation forced kernel termination. The agent **MUST** reload the `playwright-interactive` skill so it has current guidance, rerun setup, and execute one complete current startup block. It **MUST NOT** reconstruct a partial lifecycle from memory or stale tool output in the transcript. After recovery, Camoufox additional pages remain subject to the browser-originated `window.open()` requirement.

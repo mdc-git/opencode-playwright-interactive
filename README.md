@@ -63,7 +63,7 @@ access policy and rate limits.
 
 - OpenCode V2
 - Node.js newer than 22.0.0 (spawned by the persistent REPL kernel; defaults to `node` on `PATH`, override with `nodePath`)
-- npm and npx (used to install Playwright, Chromium, and Camoufox on the first browser request; defaults to `npm`/`npx` on `PATH`, override with `npmPath`, `playwrightNpmPath`, `playwrightNpxPath`)
+- npm and npx (used to install Playwright, Chromium, and Camoufox on the first browser request; defaults to `npm`/`npx` on `PATH`, override with `playwrightNpmPath` and `playwrightNpxPath`)
 
 ## Install
 
@@ -89,7 +89,6 @@ project, edit `<project>/.opencode/opencode.json(c)` or
         "nodeModuleDirs": [],
         "replCacheDir": "{env:HOME}/.cache/opencode",
         "playwrightCacheDir": "{env:HOME}/.cache/opencode/playwright",
-        "npmPath": "npm",
         "playwrightNpmPath": "npm",
         "playwrightNpxPath": "npx"
       }
@@ -149,7 +148,7 @@ The plugin also registers four Code Mode tools:
 - `js_repl_playwright_setup` installs the shared browser runtime.
 
 JavaScript cells do not accept an execution timeout. Quick cells return their
-result normally. A cell still running after 30 seconds returns a job ID and
+result normally. A cell still running after 35 seconds returns a job ID and
 continues in the same kernel:
 
 ```js
@@ -160,9 +159,25 @@ tools.js_repl_job({ action: 'list' })
 ```
 
 `status` and `list` return immediately. `wait` observes the existing job for up
-to 30 seconds and returns its current state if it is still running. It does not
+to five seconds and returns its current state if it is still running. It does not
 restart, stop, or resubmit the cell. While a job is active, new JavaScript cells
 return a busy response instead of entering a hidden queue.
+
+### REPL semantics
+
+The persistent kernel uses Node's built-in REPL evaluator with top-level
+`await`. Declare browser, module, and helper handles that will be reused across
+cells with `var`; those bindings can be reassigned or redeclared. `let` and
+`const` bindings also persist, but normal Node lexical rules apply, so
+redeclaring either name in a later cell raises a `SyntaxError`. Static
+`import ... from ...` declarations are unsupported by the Node REPL evaluator.
+
+Use `require()` for Node built-ins and workspace or shared-cache packages. Use
+dynamic `import()` for built-ins or local ESM files addressed by an explicit
+`file:` URL. `NODE_PATH` supports CommonJS `require()` resolution and does not
+make bare dynamic package imports available. Node's module cache is authoritative
+and is not automatically invalidated when an imported file changes; reset the
+kernel before expecting an edited local ESM module to execute again.
 
 ## Verify
 
@@ -191,13 +206,13 @@ sessions reuse that installation.
 | Property            | Behavior                                                                                                                                                                       |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Session isolation   | Each OpenCode session has its own Node.js kernel and scratch directory.                                                                                                        |
-| Persistence         | JavaScript state, loaded modules, browser pages, and Electron windows survive between turns.                                                                                   |
-| Package resolution  | Node.js built-ins, workspace packages, local ESM files, and configured module roots are available.                                                                             |
+| Persistence         | Top-level JavaScript state, loaded modules subject to Node's module cache, browser pages, and Electron windows survive between turns.                                          |
+| Package resolution  | Node.js built-ins and workspace or cache packages are available through `require()`; local ESM files use explicit `file:` URLs with dynamic `import()`.                        |
 | Browser cache       | Playwright, Chromium, and Camoufox are shared under `~/.cache/opencode/playwright` by default.                                                                                 |
 | Text output         | Limited to 1 MiB per execution.                                                                                                                                                |
 | Images              | Up to four PNG, JPEG, WebP, or GIF images, limited to 5 MiB each.                                                                                                              |
-| Foreground handoff  | Cells still active after 30 seconds continue as controller-managed background jobs.                                                                                            |
-| Job management      | list/status are immediate; wait observes for up to 30 seconds; cancel preserves the kernel when safe.                                                                          |
+| Foreground handoff  | Cells still active after 35 seconds continue as controller-managed background jobs.                                                                                            |
+| Job management      | list/status are immediate; wait observes for up to five seconds; cancel is cooperative and may force child-kernel termination.                                                 |
 | Busy kernel         | New cells are not queued behind an active job.                                                                                                                                 |
 | Job retention       | Each session retains its 20 newest terminal job records until reset or disposal.                                                                                               |
 | Rejected promises   | A rejected final expression or detached rejection fails the relevant call without resetting the kernel. A late background rejection is reported before the next cell executes. |
@@ -211,16 +226,15 @@ be inspected and later turns can continue from the same state. Different
 OpenCode sessions do not share kernels, browser bindings, or temporary remote
 profiles.
 
-Cancellation is cooperative when possible. Async crawls stop at inserted loop
-checkpoints after the currently awaited operation settles. Synchronous
-JavaScript is interrupted with `SIGINT` only when cooperative cancellation
-cannot be acknowledged. The kernel and state from earlier successful cells are
-preserved after either cancellation path.
-
-A never-settling native Promise can remain in the `cancelling` state. In that
-case, reset is the explicit last resort and destroys bindings, pages, contexts,
-and retained jobs. Cancellation does not roll back filesystem writes, network
-requests, page navigation, or other completed side effects.
+Cancellation is cooperative when possible. `wait` only observes a job and does
+not cancel a native Promise. A short synchronous evaluation may be interrupted,
+but a non-cooperative native operation can force termination of the child
+kernel. Forced termination loses that session's bindings and browser handles,
+but does not restart OpenCode or affect other sessions. The next REPL execution
+must recreate the kernel, rerun setup, and execute the complete browser startup
+block before browser work resumes. `js_repl_reset` likewise destroys bindings,
+pages, contexts, and retained jobs. Cancellation does not roll back filesystem
+writes, network requests, page navigation, or other completed side effects.
 
 Persistent browser profiles are opt-in. When a user explicitly supplies a
 directory and asks to reuse it, the Playwright skill passes that exact

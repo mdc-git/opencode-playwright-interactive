@@ -45,7 +45,6 @@ const CANCEL_RESTART_WAIT_MS = 1500
 const MAX_RETAINED_TERMINAL_JOBS = 20
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_PROTOCOL_LINE_BYTES = 32 * 1024 * 1024
-const MERIYAH_VERSION = '7.0.0'
 const PLAYWRIGHT_VERSION = '1.60.0'
 const CAMOUFOX_VERSION = '0.12.0'
 const CAMOUFOX_PACKAGE = 'camoufox-js'
@@ -244,7 +243,6 @@ export type RuntimeOptions = Readonly<{
   nodeModuleDirs?: unknown
   replCacheDir?: unknown
   playwrightCacheDir?: unknown
-  npmPath?: unknown
   playwrightNpmPath?: unknown
   playwrightNpxPath?: unknown
 }>
@@ -364,28 +362,6 @@ async function run(command: string, args: string[], environment: NodeJS.ProcessE
       { cause: error }
     )
   }
-}
-
-async function ensureMeriyah(options: RuntimeOptions) {
-  const directory = replCacheDirectory(options)
-  const packageFile = join(directory, 'node_modules', 'meriyah', 'package.json')
-  if (await isPackageMatch(packageFile, 'meriyah', MERIYAH_VERSION)) {
-    return
-  }
-
-  await mkdir(directory, { recursive: true })
-  await withCacheLock(join(directory, '.meriyah-install'), async () => {
-    // Re-check under the lock: another process may have finished installing.
-    if (await isPackageMatch(packageFile, 'meriyah', MERIYAH_VERSION)) {
-      return
-    }
-
-    await run(
-      optionString(options, 'npmPath', 'npm'),
-      ['install', '--prefix', directory, `meriyah@${MERIYAH_VERSION}`],
-      process.env
-    )
-  })
 }
 
 function boundedUtf8(value: string, maxBytes: number) {
@@ -633,7 +609,6 @@ class ReplController {
   }
 
   private async prepareKernel(node: string) {
-    await ensureMeriyah(this.options)
     this.scratch ??= await mkdtemp(join(tmpdir(), 'opencode-js-repl-'))
     const { scratch } = this
     const source = await readFile(join(this.scriptDirectory, 'kernel.cjs'), 'utf8')
@@ -650,16 +625,14 @@ class ReplController {
       join(replCacheDirectory(this.options), 'node_modules'),
       join(playwrightCacheDirectory(this.options), 'node_modules')
     ]
+    const nodePath = [...moduleDirs, ...(process.env.NODE_PATH?.split(delimiter) ?? [])]
+      .filter(Boolean)
+      .join(delimiter)
     return {
       cwd: this.directory,
       env: {
         ...process.env,
-        [envKey('NODE_PATH')]: [
-          join(replCacheDirectory(this.options), 'node_modules'),
-          process.env.NODE_PATH
-        ]
-          .filter(Boolean)
-          .join(delimiter),
+        [envKey('NODE_PATH')]: nodePath,
         [envKey('PLAYWRIGHT_BROWSERS_PATH')]: playwrightBrowserDirectory(this.options),
         [envKey('CAMOUFOX_INSTALL_DIR')]: join(
           playwrightCacheDirectory(this.options),
@@ -667,11 +640,6 @@ class ReplController {
         ),
         [envKey('JS_REPL_INTERNAL_SESSION_ID')]: this.sessionId,
         [envKey('JS_REPL_INTERNAL_TMP_DIR')]: this.scratch,
-        [envKey('JS_REPL_INTERNAL_MERIYAH_PATH')]: join(
-          replCacheDirectory(this.options),
-          '__opencode_js_repl__.cjs'
-        ),
-        [envKey('JS_REPL_INTERNAL_NODE_MODULE_DIRS')]: moduleDirs.join(delimiter),
         [envKey('JS_REPL_INTERNAL_SCRIPT_DIR')]: this.scriptDirectory
       },
       stdio: ['pipe', 'pipe', 'pipe', 'pipe'] as SpawnOptions['stdio']
@@ -705,7 +673,7 @@ class ReplController {
     const { kernelPath, scratch } = await this.prepareKernel(node)
     const child = spawn(
       node,
-      ['--no-warnings', '--experimental-vm-modules', kernelPath],
+      ['--no-warnings', kernelPath],
       this.buildSpawnOptions(node, kernelPath)
     ) as KernelProcess
     await this.waitForSpawn(child)
@@ -783,7 +751,8 @@ class ReplController {
       const result = {
         output: typeof message.output === 'string' ? message.output : '',
         attachments: message.status === 'cancelled' ? [] : attachments(message.attachments),
-        ...(typeof message.notice === 'string' && message.notice !== '' && { notice: message.notice })
+        ...(typeof message.notice === 'string' &&
+          message.notice !== '' && { notice: message.notice })
       }
       this.finishJob(job, message.status, result)
     } catch (error) {

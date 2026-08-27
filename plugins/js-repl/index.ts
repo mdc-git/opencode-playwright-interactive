@@ -1,9 +1,10 @@
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { Plugin, type Skill } from '@opencode-ai/plugin/effect'
-import type { CommandDefinition } from '@opencode-ai/plugin/effect/command'
-import type { Session } from '@opencode-ai/schema'
-import { Error as ToolError } from '@opencode-ai/schema/tool'
+import type { CommandDefinition, CommandDraft } from '@opencode-ai/plugin/effect/command'
+import type { SkillDraft } from '@opencode-ai/plugin/effect/skill'
+import type { ToolDraft, ToolHooks } from '@opencode-ai/plugin/effect/tool'
+import { Error as ToolError, type Tool } from '@opencode-ai/schema/tool'
 import { Effect, Stream } from 'effect'
 import {
   ReplRuntime,
@@ -57,11 +58,12 @@ const REPL_ROUTING_PATTERN = /tools(?:\.js_repl|\[["']js_repl["']\])\s*\(/v
 const IMPORT_OR_REQUIRE = /\bimport\s*\(|\brequire\s*\(/v
 const TOOLS_REFERENCE = /\btools(?:\.|\[)/v
 
-type SessionGetter = (a: {
-  readonly sessionID: Session.ID
-}) => Effect.Effect<{ location: { directory: string } }, unknown>
-type ProgressFn = (a: { title: string } & Record<string, unknown>) => Effect.Effect<void>
-type ToolCtx = { sessionID: Session.ID; progress: ProgressFn }
+type SessionGetter = Plugin.Context['session']['get']
+type ToolCtx = Pick<Tool.Context, 'sessionID' | 'progress'>
+type ExecuteBeforeHook = Pick<ToolHooks['execute.before'], 'tool' | 'input' | 'sessionID'>
+type ExecuteInput = { code: string }
+type JobInput = { action: 'list' | 'status' | 'wait' | 'cancel'; id?: string }
+type SetupInput = { force?: boolean }
 type RuntimeHolder = {
   runtime: ReplRuntime
   autoRoutedSessions: Set<string>
@@ -120,10 +122,7 @@ function releaseRuntime(runtimeId: string, holder: RuntimeHolder) {
   holder.disposeTimer.unref()
 }
 
-function shouldRouteToRepl(
-  event: { tool: string; input: unknown; sessionID: string },
-  autoRoutedSessions: Set<string>
-): boolean {
+function shouldRouteToRepl(event: ExecuteBeforeHook, autoRoutedSessions: Set<string>): boolean {
   if (event.tool !== 'execute' || typeof event.input !== 'object' || event.input === null) {
     return false
   }
@@ -139,7 +138,11 @@ function shouldRouteToRepl(
   )
 }
 
-function routeToRepl(input: unknown, autoRoutedSessions: Set<string>, sessionID: string) {
+function routeToRepl(
+  input: ExecuteBeforeHook['input'],
+  autoRoutedSessions: Set<string>,
+  sessionID: ExecuteBeforeHook['sessionID']
+) {
   const args = input as { code?: unknown }
   args.code = `return await tools.js_repl({ code: ${JSON.stringify(args.code)} });`
   autoRoutedSessions.add(sessionID)
@@ -149,7 +152,7 @@ const buildResult = (result: {
   output: string
   attachments: Array<{ url: string; mime: string; filename?: string }>
   notice?: string
-}) => {
+}): Tool.Result => {
   const noticeSuffix =
     typeof result.notice === 'string' && result.notice !== '' ? `\n\n${result.notice}` : ''
   const text =
@@ -210,7 +213,7 @@ function formatJob(job: JobSnapshot) {
   return lines.join('\n')
 }
 
-function buildJobResult(job: JobSnapshot) {
+function buildJobResult(job: JobSnapshot): Tool.Result {
   const activeGuidance = ['running', 'cancelling'].includes(job.state)
     ? `\n\nThe job is still ${job.state}. Call js_repl_job with wait again when no other work is available, or status for an immediate snapshot. Do not submit another REPL cell.`
     : ''
@@ -226,7 +229,7 @@ function formatJobList(jobs: JobSnapshot[]) {
     : jobs.map((job) => formatJob(job)).join('\n\n')
 }
 
-function formatExecutionOutcome(outcome: ExecuteOutcome) {
+function formatExecutionOutcome(outcome: ExecuteOutcome): Tool.Result {
   if (outcome.kind === 'completed') {
     return buildResult(outcome.result)
   }
@@ -250,7 +253,7 @@ function formatExecutionOutcome(outcome: ExecuteOutcome) {
 const makeReplExecutor =
   (runtime: ReplRuntime, sessionGet: SessionGetter) => (input: unknown, toolContext: ToolCtx) =>
     Effect.gen(function* () {
-      const args = input as { code: string }
+      const args = input as ExecuteInput
       yield* toolContext.progress({ title: 'JavaScript REPL' })
       const session = yield* sessionGet({ [key('sessionID')]: toolContext.sessionID }).pipe(
         Effect.mapError(asToolError)
@@ -263,7 +266,7 @@ const makeReplExecutor =
 
 const makeJobExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext: ToolCtx) =>
   Effect.gen(function* () {
-    const args = input as { action: 'list' | 'status' | 'wait' | 'cancel'; id?: string }
+    const args = input as JobInput
     yield* toolContext.progress({ title: 'JavaScript REPL job' })
     if (args.action === 'list') {
       const result: JobActionOutcome = yield* Effect.try({
@@ -308,8 +311,8 @@ const makeResetExecutor = (runtime: ReplRuntime) => (_input: unknown, toolContex
 
 const makeSetupExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext: ToolCtx) =>
   Effect.gen(function* () {
+    const args = input as SetupInput
     yield* toolContext.progress({ title: 'Set Up Shared Playwright' })
-    const args = input as { force?: boolean }
     const output = yield* attempt(async () => runtime.setupPlaywright(args.force))
     return { output, content: output }
   })
@@ -325,11 +328,7 @@ const PLUGIN_DESC =
 const PLUGIN_TEMPLATE =
   'Use the playwright-interactive skill to handle this request. All js_repl tools are Code Mode-only: never emit them as direct tool calls. First use execute with `return await tools.js_repl_playwright_setup({})`. Then send each browser cell as plain JavaScript directly through execute, without wrapping it in tools.js_repl(...). Use tools.js_repl_job(...) and tools.js_repl_reset(...) only inside execute. Select the correct startup mode, use Playwright for browser lifecycle and locators, and use humanized input only for remote-site interactions.'
 
-function applySkillTransform(
-  skills: { add(skill: unknown): void },
-  pluginDir: string,
-  skillBody: string
-) {
+function applySkillTransform(skills: SkillDraft, pluginDir: string, skillBody: string) {
   skills.add({
     id: 'playwright-interactive' as Skill.ID,
     name: 'playwright-interactive' as Skill.Name,
@@ -339,11 +338,7 @@ function applySkillTransform(
   })
 }
 
-function applyToolTransform(
-  tools: { add(tool: unknown): void },
-  runtime: ReplRuntime,
-  sessionGet: SessionGetter
-) {
+function applyToolTransform(tools: ToolDraft, runtime: ReplRuntime, sessionGet: SessionGetter) {
   tools.add({
     name: 'js_repl',
     description: REPL_DESC,
@@ -381,10 +376,7 @@ function applyToolTransform(
   })
 }
 
-function applyCommandTransform(
-  commands: { add(command: CommandDefinition): void },
-  execute: CommandDefinition['execute']
-) {
+function applyCommandTransform(commands: CommandDraft, execute: CommandDefinition['execute']) {
   commands.add({ name: 'playwright', description: PLUGIN_DESC, execute })
 }
 
