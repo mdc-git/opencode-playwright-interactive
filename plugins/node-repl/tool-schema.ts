@@ -1,56 +1,52 @@
-import { Schema as schema } from 'effect'
+export const replInput = {
+  type: 'object',
+  properties: {
+    code: {
+      type: 'string',
+      minLength: 1,
+      description:
+        'Plain Node.js source for the persistent REPL. Call the native `node_repl` tool directly with this source; do not wrap it in another tool call or interpreter.'
+    }
+  },
+  required: ['code'],
+  additionalProperties: false
+} as const
+export type ReplInput = { code: string }
 
-const {
-  String: string,
-  Boolean: boolean,
-  Struct: struct,
-  Record: record,
-  Never: never,
-  Literal: literal,
-  optionalKey,
-  annotate,
-  Union: union
-} = schema
-const nonEmptyString = string.check(schema.isMinLength(1))
+export const resetInput = { type: 'object', properties: {}, additionalProperties: false } as const
+export type ResetInput = Record<string, never>
 
-const replCode = nonEmptyString.pipe(
-  annotate({
-    description:
-      'Plain Node.js source for the persistent REPL. Call the native `node_repl` tool directly with this source; do not wrap it in another tool call or interpreter.'
-  })
-)
+export const setupInput = {
+  type: 'object',
+  properties: {
+    force: {
+      type: 'boolean',
+      description: 'Reinstall Playwright and Chromium even when the shared cache is already ready.'
+    }
+  },
+  additionalProperties: false
+} as const
+export type SetupInput = { force?: boolean }
 
-export const replInput = struct({
-  code: replCode
-})
-export type ReplInput = schema.Schema.Type<typeof replInput>
+export const jobInput = {
+  oneOf: [
+    {
+      type: 'object',
+      properties: { action: { const: 'list' } },
+      required: ['action'],
+      additionalProperties: false
+    },
+    ...(['status', 'wait', 'cancel'] as const).map((action) => ({
+      type: 'object',
+      properties: {
+        action: { const: action },
+        id: { type: 'string', minLength: 1 }
+      },
+      required: ['action', 'id'],
+      additionalProperties: false
+    }))
+  ]
+} as const
+export type JobInput = { action: 'list' } | { action: 'status' | 'wait' | 'cancel'; id: string }
 
-export const resetInput = record(string, never)
-export type ResetInput = schema.Schema.Type<typeof resetInput>
-
-const forceInput = boolean.pipe(
-  annotate({
-    description: 'Reinstall Playwright and Chromium even when the shared cache is already ready.'
-  })
-)
-
-export const setupInput = struct({
-  force: optionalKey(forceInput)
-})
-export type SetupInput = schema.Schema.Type<typeof setupInput>
-
-const jobWithId = <const Action extends 'status' | 'wait' | 'cancel'>(action: Action) =>
-  struct({
-    action: literal(action),
-    id: nonEmptyString
-  })
-
-export const jobInput = union([
-  struct({ action: literal('list') }),
-  jobWithId('status'),
-  jobWithId('wait'),
-  jobWithId('cancel')
-])
-export type JobInput = schema.Schema.Type<typeof jobInput>
-
-export const textOutput = string
+export const textOutput = { type: 'string' } as const

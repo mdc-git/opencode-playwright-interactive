@@ -49,22 +49,27 @@ const SETUP_DESC =
 
 const makeReplExecutor =
   (runtime: ReplRuntime, sessionGet: SessionGetter) =>
-  (input: ReplInput, toolContext: Tool.Context) =>
+  (input: unknown, toolContext: Tool.Context) =>
     Effect.gen(function* () {
       yield* toolContext.progress({ title: 'Node.js REPL' })
       const session = yield* sessionGet({ [key('sessionID')]: toolContext.sessionID }).pipe(
         Effect.mapError(asToolError)
       )
       const result = yield* attempt(async () =>
-        runtime.execute(toolContext.sessionID, session.location.directory, input.code)
+        runtime.execute(
+          toolContext.sessionID,
+          session.location.directory,
+          (input as ReplInput).code
+        )
       )
       return formatExecutionOutcome(result)
     })
 
-const makeJobExecutor = (runtime: ReplRuntime) => (input: JobInput, toolContext: Tool.Context) =>
+const makeJobExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext: Tool.Context) =>
   Effect.gen(function* () {
     yield* toolContext.progress({ title: 'Node.js REPL job' })
-    if (input.action === 'list') {
+    const args = input as JobInput
+    if (args.action === 'list') {
       const result = yield* Effect.try({
         try: () => runtime.listJobs(toolContext.sessionID),
         catch: asToolError
@@ -77,15 +82,15 @@ const makeJobExecutor = (runtime: ReplRuntime) => (input: JobInput, toolContext:
     }
 
     const run = async () => {
-      if (input.action === 'status') {
-        return runtime.getJob(toolContext.sessionID, input.id)
+      if (args.action === 'status') {
+        return runtime.getJob(toolContext.sessionID, args.id)
       }
 
-      if (input.action === 'wait') {
-        return runtime.waitForJob(toolContext.sessionID, input.id)
+      if (args.action === 'wait') {
+        return runtime.waitForJob(toolContext.sessionID, args.id)
       }
 
-      return runtime.cancelJob(toolContext.sessionID, input.id)
+      return runtime.cancelJob(toolContext.sessionID, args.id)
     }
 
     const result = yield* attempt(run)
@@ -96,24 +101,22 @@ const makeJobExecutor = (runtime: ReplRuntime) => (input: JobInput, toolContext:
     return formatJobActionResult(result.job)
   })
 
-const makeResetExecutor =
-  (runtime: ReplRuntime) => (_input: ResetInput, toolContext: Tool.Context) =>
-    Effect.gen(function* () {
-      yield* toolContext.progress({ title: 'Reset Node.js REPL' })
-      const didReset = yield* attempt(async () => runtime.reset(toolContext.sessionID))
-      const output = didReset
-        ? 'Node.js REPL kernel reset.'
-        : 'Node.js REPL kernel was not initialized.'
-      return { output, content: output }
-    })
+const makeResetExecutor = (runtime: ReplRuntime) => (_input: unknown, toolContext: Tool.Context) =>
+  Effect.gen(function* () {
+    yield* toolContext.progress({ title: 'Reset Node.js REPL' })
+    const didReset = yield* attempt(async () => runtime.reset(toolContext.sessionID))
+    const output = didReset
+      ? 'Node.js REPL kernel reset.'
+      : 'Node.js REPL kernel was not initialized.'
+    return { output, content: output }
+  })
 
-const makeSetupExecutor =
-  (runtime: ReplRuntime) => (input: SetupInput, toolContext: Tool.Context) =>
-    Effect.gen(function* () {
-      yield* toolContext.progress({ title: 'Set Up Shared Playwright' })
-      const output = yield* attempt(async () => runtime.setupPlaywright(input.force))
-      return { output, content: output }
-    })
+const makeSetupExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext: Tool.Context) =>
+  Effect.gen(function* () {
+    yield* toolContext.progress({ title: 'Set Up Shared Playwright' })
+    const output = yield* attempt(async () => runtime.setupPlaywright((input as SetupInput).force))
+    return { output, content: output }
+  })
 
 export function registerTools(tools: ToolDraft, runtime: ReplRuntime, sessionGet: SessionGetter) {
   tools.add({
