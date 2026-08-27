@@ -54,7 +54,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/we
 // The persistent Node kernel lives in scripts/kernel.cjs so the tool stays
 // self-contained within the plugin package.
 type Attachment = { type: 'file'; mime: string; url: string; filename?: string }
-type Result = { output: string; attachments: Attachment[]; notice?: string }
+type Result = { output: string; attachments: Attachment[] }
 export type JobState = 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
 export type JobSnapshot = {
   id: string
@@ -98,7 +98,6 @@ type Message =
       output?: string
       attachments?: unknown
       error?: string
-      notice?: string
     }
   | { type: 'cancel_ack'; id: string }
 
@@ -750,9 +749,7 @@ class ReplController {
     try {
       const result = {
         output: typeof message.output === 'string' ? message.output : '',
-        attachments: message.status === 'cancelled' ? [] : attachments(message.attachments),
-        ...(typeof message.notice === 'string' &&
-          message.notice !== '' && { notice: message.notice })
+        attachments: message.status === 'cancelled' ? [] : attachments(message.attachments)
       }
       this.finishJob(job, message.status, result)
     } catch (error) {

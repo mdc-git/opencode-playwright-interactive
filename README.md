@@ -3,8 +3,8 @@
 A persistent JavaScript runtime and Playwright workflow for browser and Electron
 QA in OpenCode V2.
 
-This project targets OpenCode V2 and its V2 plugin, tool, skill, permission,
-and Code Mode APIs. It is not a V1 plugin.
+This project targets OpenCode V2 and its V2 plugin, tool, skill, and permission
+APIs. It is not a V1 plugin.
 
 <!-- markdownlint-disable-next-line MD033 -->
 
@@ -140,22 +140,28 @@ The command activates the `playwright-interactive` skill, runs setup, and
 instructs the agent to select the correct startup mode before carrying out the
 task. The skill can also be activated directly without the command.
 
-The plugin also registers four Code Mode tools:
+The plugin also registers four native V2 tools:
 
 - `js_repl` executes JavaScript in the persistent session kernel.
 - `js_repl_job` lists, inspects, waits for, or cancels REPL jobs.
 - `js_repl_reset` clears the session kernel and all retained state.
 - `js_repl_playwright_setup` installs the shared browser runtime.
 
+Call the tools directly. For example:
+
+```js
+js_repl({ code: '2 + 2' })
+```
+
 JavaScript cells do not accept an execution timeout. Quick cells return their
 result normally. A cell still running after 35 seconds returns a job ID and
 continues in the same kernel:
 
 ```js
-tools.js_repl_job({ action: 'status', id: 'repl_3' })
-tools.js_repl_job({ action: 'wait', id: 'repl_3' })
-tools.js_repl_job({ action: 'cancel', id: 'repl_3' })
-tools.js_repl_job({ action: 'list' })
+js_repl_job({ action: 'status', id: 'repl_3' })
+js_repl_job({ action: 'wait', id: 'repl_3' })
+js_repl_job({ action: 'cancel', id: 'repl_3' })
+js_repl_job({ action: 'list' })
 ```
 
 `status` and `list` return immediately. `wait` observes the existing job for up
@@ -194,7 +200,7 @@ opencode2 api get "/api/plugin?location[directory]=$(pwd)"
 ```
 
 The response should contain `local.js-repl`. Start OpenCode in that project and
-confirm that the `playwright-interactive` skill and `js_repl_job` tool are
+confirm that the `playwright-interactive` skill and native `js_repl` tools are
 available.
 
 The first browser request installs the supported Playwright package, matching

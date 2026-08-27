@@ -13,30 +13,30 @@ Sections marked **CRITICAL** are mandatory execution gates. They are not recomme
 
 ## REQUIRED: Tool Invocation
 
-All `js_repl` entries are Code Mode tools. The assistant's direct tool namespace does not expose them. The agent **MUST NOT** emit a top-level `js_repl`, `js_repl_job`, `js_repl_reset`, or `js_repl_playwright_setup` tool call.
+All REPL controls are native OpenCode tools. The agent **MUST** call them directly and **MUST NOT** wrap them in `execute`, `tools.js_repl`, a string, or a template literal.
 
-- Setup through `execute` with `return await tools.js_repl_playwright_setup({})`.
-- For a normal browser REPL cell, send only the plain Node.js source as `execute` code. The plugin routes it into the persistent kernel.
-- The agent **MUST NOT** wrap a normal cell in `tools.js_repl({ code: ... })`, a string, or a template literal. That creates an unnecessary second JavaScript parser and can interpolate or terminate code before the REPL receives it.
-- Job management and reset stay inside `execute`: `return await tools.js_repl_job({ action: 'wait', id: 'repl_1' })` and `return await tools.js_repl_reset({})`.
+- Setup with `js_repl_playwright_setup({})`.
+- Run each cell with `js_repl({ code: 'plain Node.js source' })`.
+- Manage jobs with `js_repl_job({ action: 'wait', id: 'repl_1' })`, `status`, `cancel`, or `list`.
+- Reset with `js_repl_reset({})` only when losing bindings and browser handles is acceptable.
 
 ## Startup
 
 Run setup first:
 
 ```js
-return await tools.js_repl_playwright_setup({})
+js_repl_playwright_setup({})
 ```
 
-### REQUIRED: Direct REPL Routing
+### REQUIRED: Sequential REPL Calls
 
-After setup, the agent **MUST** send each browser REPL cell as plain JavaScript directly in the `execute` tool's `code` input. It **MUST NOT** wrap browser code in a nested `tools.js_repl(...)` call. The plugin safely routes the first cell containing `import(...)` or `require(...)` to `js_repl` and keeps routing later plain JavaScript cells in that session to the same persistent kernel.
+After setup, the agent **MUST** send each browser REPL cell as plain JavaScript in the `code` input of a direct `js_repl` call. The plugin executes every cell in the same persistent session kernel.
 
-`js_repl_playwright_setup`, `js_repl_job`, and `js_repl_reset` are explicit Code Mode calls only within `execute`, as shown above. Browser startup, inspection, and interaction cells do not need an inner tool call.
+Browser startup, inspection, and interaction cells do not need an inner tool call.
 
 Long cells require no wrapper or timeout option. If `js_repl` returns a job ID, use `js_repl_job` with `wait` when no other work is available, `status` for an immediate snapshot, and `cancel` to request cancellation. Do not submit another JavaScript cell while the kernel reports an active job. Long-running cells have no automatic wall-clock limit and may remain as background jobs while they make progress; the foreground handoff occurs after 35 seconds. Cancellation is cooperative when possible. A short synchronous evaluation may be interrupted, but `wait` only observes a job and does not cancel a native promise. If native work does not return, cancellation can force termination of the session kernel; this loses that session's bindings and browser handles but does not restart OpenCode or affect other sessions. After forced kernel loss, the next execution must rerun setup and the complete startup block. Use `js_repl_reset` only when losing bindings and browser handles is acceptable. Each `wait` observes for up to five seconds and does not stop or restart the job; if it still reports an active state, call `wait` again when no other work is available.
 
-This avoids nesting JavaScript source inside another template literal. If `execute` reports `Failed to parse TypeScript`, the cell did not reach `js_repl`; correct the outer JavaScript syntax and retry the same small cell without resetting the kernel.
+If `js_repl` reports a parse error, correct the Node.js source and retry the same small cell without resetting the kernel.
 
 Select exactly one startup mode. A local URL uses standard Chromium, a remote URL uses Camoufox, and Electron uses its own launcher. Do not navigate during startup. Web contexts **MUST** use `viewport: null` so the page viewport follows manual browser-window resizing instead of remaining fixed at Playwright's 1280x720 default.
 
@@ -132,7 +132,6 @@ The persistent kernel uses Node's built-in REPL evaluator and keeps top-level bi
 
 - **Use `var` for persistent handles.** `var` bindings persist and may be reassigned or redeclared across cells. `let` and `const` also persist, but normal Node lexical rules apply: redeclaring either name in a later cell raises a `SyntaxError` such as `Identifier 'X' has already been declared`. Reassign an existing `var` handle (`page = await context.newPage()`) rather than introducing a parallel one.
 - **Prefer reusing handles over re-creating them.** `browser`, `context`, `page`, `input`, `electronApp`, `appWindow`, `fs`, `path`, and any helper you assigned in a prior cell persist into the next one. Reference them directly instead of launching a new browser, importing a module again, or recomputing a value that already exists. If a value is missing or stale, reassign the existing name rather than introducing a parallel one.
-- **Reuse — do not accumulate — shared state.** Every top-level binding lives for the whole session, so each name you add is ongoing pollution the agent must track. Do not declare a helper, counter, scratch object, or intermediate result at the top level when a local variable inside a block or a single returned expression would do. Scope work to the cell: prefer a local `const x = ...` used immediately and returned, or wrap a multi-step computation in a block (`{ ... }`) or an IIFE so its temporaries never enter the shared scope. Reuse the one browser/context/page trio across the task rather than opening extras; close and null out a handle only when its lifecycle is truly over.
 - **Use `require()` or dynamic import, never a static import declaration.** Static `import ... from ...` declarations are unsupported by the Node REPL evaluator. Use `require()` for Node built-ins and workspace or shared-cache packages. Use `await import(...)` for built-ins or local ESM files addressed by an explicit `file:` URL; never wrap it in `eval("…import…")`. `NODE_PATH` supports CommonJS `require()` resolution and is not a promise of bare dynamic package imports.
 - **Respect Node's module cache.** Node's `require()` and dynamic `import()` caches are authoritative and are not automatically invalidated when a file changes. Reset the kernel before expecting an edited imported ESM module to execute again, then rerun setup and the complete startup block.
 - **It is a Node kernel, not a browser.** `location`, `document`, `window`, `navigator`, and `localStorage` are not defined. Reach the DOM through Playwright: `await page.evaluate(() => location.href)` or `await page.locator(...)`. Use `opencode.tmpDir`/`opencode.cwd` (Node paths) for filesystem work, not browser URLs.
