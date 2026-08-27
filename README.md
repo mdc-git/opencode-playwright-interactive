@@ -1,6 +1,6 @@
-# OpenCode V2 JavaScript REPL and Playwright
+# OpenCode V2 Node REPL and Playwright
 
-A persistent JavaScript runtime and Playwright workflow for browser and Electron
+A persistent Node.js REPL and Playwright workflow for browser and Electron
 QA in OpenCode V2.
 
 This project targets OpenCode V2 and its V2 plugin, tool, skill, and permission
@@ -13,7 +13,7 @@ APIs. It is not a V1 plugin.
 ## Why use it
 
 Most browser tools limit an agent to a fixed collection of actions and outputs.
-This project places Playwright inside a persistent JavaScript runtime, giving
+This project places Playwright inside a persistent Node.js REPL, giving
 OpenCode a general-purpose workspace for browser and Electron tasks. Pages,
 modules, variables, locators, and other JavaScript objects remain available
 across turns.
@@ -78,8 +78,8 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 {
   "$schema": "https://opencode.ai/config.json",
   "permissions": [
-    { "action": "js_repl", "resource": "*", "effect": "ask" },
-    { "action": "js_repl_reset", "resource": "*", "effect": "ask" }
+    { "action": "node_repl", "resource": "*", "effect": "ask" },
+    { "action": "node_repl_reset", "resource": "*", "effect": "ask" }
   ],
   "plugins": [
     {
@@ -98,7 +98,7 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 ```
 
 Paths are used as provided; shell expansion such as `~` is not performed. Use
-`allow` to run tools without prompting or `deny` to block them. `js_repl_reset`
+`allow` to run tools without prompting or `deny` to block them. `node_repl_reset`
 has a separate permission because it destroys the current kernel and its state.
 
 The plugin registers the `playwright-interactive` skill automatically; no
@@ -136,21 +136,21 @@ QA session with a single prompt:
 /playwright launch the Electron app and verify the settings dialog
 ```
 
-The command activates the `playwright-interactive` skill, runs setup, and
-instructs the agent to select the correct startup mode before carrying out the
-task. The skill can also be activated directly without the command.
+The command activates the `playwright-interactive` skill and instructs the agent
+to run setup and select the correct startup mode before carrying out the task.
+The skill can also be activated directly without the command.
 
 The plugin also registers four native V2 tools:
 
-- `js_repl` executes JavaScript in the persistent session kernel.
-- `js_repl_job` lists, inspects, waits for, or cancels REPL jobs.
-- `js_repl_reset` clears the session kernel and all retained state.
-- `js_repl_playwright_setup` installs the shared browser runtime.
+- `node_repl` executes JavaScript in the persistent session kernel.
+- `node_repl_job` lists, inspects, waits for, or cancels REPL jobs.
+- `node_repl_reset` clears the session kernel and all retained state.
+- `node_repl_playwright_setup` installs the shared browser runtime.
 
 Call the tools directly. For example:
 
 ```js
-js_repl({ code: '2 + 2' })
+node_repl({ code: '2 + 2' })
 ```
 
 JavaScript cells do not accept an execution timeout. Quick cells return their
@@ -158,10 +158,10 @@ result normally. A cell still running after 35 seconds returns a job ID and
 continues in the same kernel:
 
 ```js
-js_repl_job({ action: 'status', id: 'repl_3' })
-js_repl_job({ action: 'wait', id: 'repl_3' })
-js_repl_job({ action: 'cancel', id: 'repl_3' })
-js_repl_job({ action: 'list' })
+node_repl_job({ action: 'status', id: 'repl_3' })
+node_repl_job({ action: 'wait', id: 'repl_3' })
+node_repl_job({ action: 'cancel', id: 'repl_3' })
+node_repl_job({ action: 'list' })
 ```
 
 `status` and `list` return immediately. `wait` observes the existing job for up
@@ -199,8 +199,8 @@ From a project where the plugin should be active, check the loaded plugins:
 opencode2 api get "/api/plugin?location[directory]=$(pwd)"
 ```
 
-The response should contain `local.js-repl`. Start OpenCode in that project and
-confirm that the `playwright-interactive` skill and native `js_repl` tools are
+The response should contain `local.node-repl`. Start OpenCode in that project and
+confirm that the `playwright-interactive` skill and native `node_repl` tools are
 available.
 
 The first browser request installs the supported Playwright package, matching
@@ -238,7 +238,7 @@ but a non-cooperative native operation can force termination of the child
 kernel. Forced termination loses that session's bindings and browser handles,
 but does not restart OpenCode or affect other sessions. The next REPL execution
 must recreate the kernel, rerun setup, and execute the complete browser startup
-block before browser work resumes. `js_repl_reset` likewise destroys bindings,
+block before browser work resumes. `node_repl_reset` likewise destroys bindings,
 pages, contexts, and retained jobs. Cancellation does not roll back filesystem
 writes, network requests, page navigation, or other completed side effects.
 
@@ -259,11 +259,11 @@ movement, clicks, scrolling, and keyboard/form input.
 The persistent JavaScript runtime is trusted local code, not a sandbox. Code
 runs with the current user's Node.js permissions and can access the filesystem,
 network, child processes, and worker threads. An `allow` permission for
-`js_repl` permits arbitrary local code execution.
+`node_repl` permits arbitrary local code execution.
 
 ## Remove
 
-Remove the plugin entry and the `js_repl` and `js_repl_reset` permission rules
+Remove the plugin entry and the `node_repl` and `node_repl_reset` permission rules
 from your `opencode.json(c)`, then restart:
 
 ```sh

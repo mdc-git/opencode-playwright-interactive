@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Adapted from OpenAI Codex's js_repl kernel at revision 219c65d.
+// Adapted from OpenAI Codex's Node REPL kernel at revision 219c65d.
 
 const { Buffer } = require('node:buffer')
 const { AsyncLocalStorage, createHook } = require('node:async_hooks')
@@ -38,12 +38,12 @@ createHook({
 }).enable()
 
 const cwd = process.cwd()
-const temporaryDir = process.env.JS_REPL_INTERNAL_TMP_DIR || cwd
+const temporaryDir = process.env.NODE_REPL_INTERNAL_TMP_DIR || cwd
 const homeDir = process.env.HOME ?? null
-const sessionId = process.env.JS_REPL_INTERNAL_SESSION_ID || null
-const scriptDir = process.env.JS_REPL_INTERNAL_SCRIPT_DIR || null
+const sessionId = process.env.NODE_REPL_INTERNAL_SESSION_ID || null
+const scriptDir = process.env.NODE_REPL_INTERNAL_SCRIPT_DIR || null
 let browserBindingCounter = 0
-const workspaceRequire = createRequire(path.join(cwd, '__opencode_js_repl__.cjs'))
+const workspaceRequire = createRequire(path.join(cwd, '__opencode_node_repl__.cjs'))
 
 function normalizeImageMimeType(value) {
   const mime = typeof value === 'string' ? value.toLowerCase() : ''
@@ -75,7 +75,7 @@ function normalizeImageFilename(value, mime) {
     .basename(value.trim())
     .replaceAll(/[^\w\-.]/gv, '_')
     .slice(0, 255)
-  return base || `js-repl-image.${imageExtension(mime)}`
+  return base || `node-repl-image.${imageExtension(mime)}`
 }
 
 function byteView(value) {
@@ -159,7 +159,7 @@ function normalizeImage(value) {
 function emitImage(imageLike) {
   const state = activeExecState
   if (!state) {
-    return Promise.reject(new Error('opencode.emitImage requires an active js_repl execution'))
+    return Promise.reject(new Error('opencode.emitImage requires an active node_repl execution'))
   }
 
   const observation = { observed: false }
@@ -201,7 +201,7 @@ function emitImage(imageLike) {
 function emitText(textLike) {
   const state = activeExecState
   if (!state) {
-    return Promise.reject(new Error('opencode.emitText requires an active js_repl execution'))
+    return Promise.reject(new Error('opencode.emitText requires an active node_repl execution'))
   }
 
   const text = typeof textLike === 'string' ? textLike : textLike?.text
@@ -361,7 +361,7 @@ function createReplEvaluator(server) {
     typeof server?.eval !== 'function' ||
     !server.context
   ) {
-    throw new Error('js_repl requires a Node REPL with programmatic domain error routing')
+    throw new Error('node_repl requires a Node REPL with programmatic domain error routing')
   }
 
   let active = null
@@ -421,7 +421,7 @@ function reportNonFatal(kind, error) {
   try {
     fs.writeSync(
       process.stderr.fd,
-      'js_repl kernel non-fatal ' + kind + ' error: ' + formatError(error) + '\n'
+      'node_repl kernel non-fatal ' + kind + ' error: ' + formatError(error) + '\n'
     )
   } catch {}
 }
@@ -440,7 +440,7 @@ function scheduleFatalExit(kind, error) {
   }
 
   isFatalExitScheduled = true
-  const message = `js_repl kernel ${kind}: ${formatError(error)}; kernel reset.`
+  const message = `node_repl kernel ${kind}: ${formatError(error)}; kernel reset.`
   if (activeExecId) {
     try {
       fs.writeSync(
@@ -513,7 +513,7 @@ async function withCapturedConsole(state, fn) {
     const next = Buffer.byteLength(line) + (logs.length > 0 ? 1 : 0)
     // Console output and opencode.emitText share one execution-wide budget.
     if (state.outputBytes + next > MAX_OUTPUT_BYTES) {
-      logs.push(`[js_repl output truncated at ${MAX_OUTPUT_BYTES} bytes]`)
+      logs.push(`[node_repl output truncated at ${MAX_OUTPUT_BYTES} bytes]`)
       isTruncated = true
       return
     }
@@ -565,7 +565,7 @@ async function handleExec(message) {
       withCapturedConsole(execState, async (logs) => {
         const value = await evaluateInRepl(
           typeof message.code === 'string' ? message.code : '',
-          path.join(cwd, '__opencode_js_repl__.cjs')
+          path.join(cwd, '__opencode_node_repl__.cjs')
         )
         throwIfExecutionCancelled()
 
@@ -600,7 +600,7 @@ async function handleExec(message) {
             Buffer.byteLength(completion[0]) +
             (logs.length > 0 || execState.emittedText.length > 0 ? 1 : 0)
           if (execState.outputBytes + bytes > MAX_OUTPUT_BYTES) {
-            completion[0] = `[js_repl output truncated at ${MAX_OUTPUT_BYTES} bytes]`
+            completion[0] = `[node_repl output truncated at ${MAX_OUTPUT_BYTES} bytes]`
           } else {
             execState.outputBytes += bytes
           }

@@ -1,7 +1,7 @@
 {
   "entry": [
-    "plugins/js-repl/scripts/humanized-input.mjs",
-    "plugins/js-repl/scripts/humanized-input-utils.mjs"
+    "plugins/node-repl/scripts/humanized-input.mjs",
+    "plugins/node-repl/scripts/humanized-input-utils.mjs"
   ],
   "project": ["plugins/**/*.{ts,mjs}"]
 }

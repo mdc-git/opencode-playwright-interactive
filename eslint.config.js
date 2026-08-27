@@ -27,11 +27,20 @@ export default defineConfig([
         typescript: true
       },
       'boundaries/files': [
-        { pattern: 'plugins/js-repl/index.ts', category: 'entry' },
-        { pattern: 'plugins/js-repl/runtime.ts', category: 'core' },
-        { pattern: 'plugins/js-repl/scripts/humanized-input.mjs', category: 'input' },
-        { pattern: 'plugins/js-repl/scripts/humanized-input-actions.mjs', category: 'utils' },
-        { pattern: 'plugins/js-repl/scripts/humanized-input-utils.mjs', category: 'utils' }
+        { pattern: 'plugins/node-repl/index.ts', category: 'entry' },
+        { pattern: 'plugins/node-repl/runtime.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/runtime-cache.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/runtime-controller.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/runtime-process.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/runtime-protocol.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/runtime-registry.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/runtime-types.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/tool-handler.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/tool-result.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/tool-schema.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/scripts/humanized-input.mjs', category: 'input' },
+        { pattern: 'plugins/node-repl/scripts/humanized-input-actions.mjs', category: 'utils' },
+        { pattern: 'plugins/node-repl/scripts/humanized-input-utils.mjs', category: 'utils' }
       ]
     },
     plugins: {
@@ -62,6 +71,10 @@ export default defineConfig([
               allow: { to: { file: { categories: ['core'] } } }
             },
             {
+              from: { file: { categories: ['core'] } },
+              allow: { to: { file: { categories: ['core'] } } }
+            },
+            {
               from: { file: { categories: ['input'] } },
               allow: { to: { file: { categories: ['utils'] } } }
             },
@@ -77,7 +90,7 @@ export default defineConfig([
 
   // Browser globals for Playwright page.evaluate() callbacks in input scripts
   {
-    files: ['plugins/js-repl/scripts/humanized-input-*.mjs'],
+    files: ['plugins/node-repl/scripts/humanized-input-*.mjs'],
     languageOptions: {
       globals: globals.browser
     }

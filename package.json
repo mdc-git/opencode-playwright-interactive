@@ -1,11 +1,11 @@
 {
   "name": "opencode-playwright-interactive",
   "version": "1.0.0",
-  "description": "Persistent Playwright and Electron QA through js_repl, a session-isolated Node.js runtime for opencode.",
+  "description": "Persistent Playwright and Electron QA through node_repl, a session-isolated Node.js runtime for opencode.",
   "license": "MIT",
   "repository": "github:mdc-git/opencode-playwright-interactive",
   "type": "module",
-  "exports": "./plugins/js-repl/index.ts",
+  "exports": "./plugins/node-repl/index.ts",
   "sideEffects": false,
   "engines": {
     "node": ">22.0.0"
@@ -26,7 +26,7 @@
     "opencode-plugin",
     "playwright",
     "electron",
-    "javascript-repl",
+    "node-repl",
     "qa"
   ],
   "dependencies": {
