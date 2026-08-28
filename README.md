@@ -115,15 +115,26 @@ other declared dependencies into an isolated cache, and loads the plugin. See
 [Verify](#verify) below to confirm it loaded.
 
 > [!NOTE]
-> If the plugin fails to load with an `NpmInstallFailedError` about a missing
-> `package.json`, a stale npm or OpenCode package cache may be referencing a
-> prior failed clone. Clear both caches and restart:
+> V2 stores a git package install under a cache key such as
+> `~/.cache/opencode/packages/git-<sha256>/`, not under a package-named
+> directory. The local development override below does not use that package
+> cache. If a deployed package reports an install error, inspect the service
+> log and the exact cache entry before removing anything.
 >
-> ```sh
-> rm -rf ~/.cache/opencode/packages/opencode-playwright-interactive@git+https:*
-> npm cache clean --force
-> opencode2 service restart
-> ```
+> The package loader refreshes mutable git references when they are loaded.
+
+## Local development
+
+This repository includes a local V2 configuration under `.opencode/`. It removes
+the globally configured `github.node_repl` plugin by its exported ID and loads
+`./local-node-repl.ts` instead. That wrapper assigns the local instance the
+`local.node_repl` ID, preventing a duplicate plugin registration while the
+working tree is used as the source.
+
+When OpenCode is running from this repository, the plugin registry should show
+`local.node_repl` with a local source. Local development does not depend on the
+deployed git package cache. Restart the relevant OpenCode service or standalone
+session after source changes when the imported module cache has not reloaded.
 
 ## Commands and tools
 
@@ -202,9 +213,10 @@ From a project where the plugin should be active, check the loaded plugins:
 opencode2 api get "/api/plugin?location[directory]=$(pwd)"
 ```
 
-The response should contain `local.node-repl`. Start OpenCode in that project and
-confirm that the `playwright-interactive` skill and native `node_repl` tools are
-available.
+For a deployed package, the response should contain `github.node_repl`. When
+OpenCode is running from this repository, the local override should instead
+show `local.node_repl`. Start OpenCode in that project and confirm that the
+`playwright-interactive` skill and native `node_repl` tools are available.
 
 The first browser request installs the supported Playwright package, matching
 Chromium, and Camoufox under `~/.cache/opencode/playwright` by default. Later
@@ -221,7 +233,7 @@ sessions reuse that installation.
 | Text output         | Limited to 1 MiB per execution.                                                                                                                                                |
 | Images              | Up to four PNG, JPEG, WebP, or GIF images, limited to 5 MiB each.                                                                                                              |
 | Foreground handoff  | Cells still active after 35 seconds continue as controller-managed background jobs.                                                                                            |
-| Job management      | list/status are immediate; wait observes for up to five seconds; cancel allows two seconds before SIGINT and five more seconds before beginning child-kernel termination.      |
+| Job management      | list/status are immediate; wait observes for up to five seconds; cancel allows two seconds for cooperative completion and five more before child-kernel termination.           |
 | Busy kernel         | New cells are not queued behind an active job.                                                                                                                                 |
 | Job retention       | Each session retains its 20 newest terminal job records until reset or disposal.                                                                                               |
 | Rejected promises   | A rejected final expression or detached rejection fails the relevant call without resetting the kernel. A late background rejection is reported before the next cell executes. |
@@ -237,17 +249,17 @@ profiles.
 
 Cancellation is cooperative when possible. `wait` only observes a job and does
 not cancel a native Promise. The controller waits two seconds after requesting
-cancellation before sending `SIGINT`, then allows five more seconds before
-beginning termination if a non-cooperative native operation remains stuck.
-Forced termination loses that
+cancellation, then allows five more seconds before beginning termination if a
+non-cooperative native operation remains stuck. Forced termination loses the
 session's bindings and browser handles, but does not restart OpenCode or affect
 other sessions. The completed job reports whether the kernel was preserved or
 terminated; the next REPL execution reports a restart when one occurred and
 must recreate the kernel, rerun setup, and execute the complete browser startup
 block before browser work resumes. `node_repl_reset` likewise destroys bindings,
 pages, contexts, and retained jobs. Cancellation is not rollback: filesystem
-writes, network requests, page navigation, browser actions, and partial lexical
-declarations may remain after either kind of cancellation.
+writes, network requests, page navigation, and browser actions may remain after
+either kind of cancellation, while partial lexical declarations may remain
+when a preserved kernel was interrupted.
 
 Persistent browser profiles are opt-in. When a user explicitly supplies a
 directory and asks to reuse it, the Playwright skill passes that exact

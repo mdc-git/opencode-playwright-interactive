@@ -40,7 +40,7 @@ const envKey = <const K extends string>(key: K): K => key
 
 const FOREGROUND_WAIT_MS = 35_000
 const JOB_WAIT_MS = 5000
-const CANCEL_INTERRUPT_WAIT_MS = 2000
+const CANCEL_COOPERATIVE_WAIT_MS = 2000
 const CANCEL_FORCE_WAIT_MS = 5000
 const MAX_RETAINED_TERMINAL_JOBS = 20
 const MAX_PROTOCOL_LINE_BYTES = 32 * 1024 * 1024
@@ -99,6 +99,7 @@ export class ReplController {
   private disposed = false
   private request = 0
   private kernelGeneration = 0
+  private stopping?: Promise<void>
 
   constructor(
     sessionID: SessionId,
@@ -223,17 +224,11 @@ export class ReplController {
           return
         }
 
-        child.stdin.write(
-          `${JSON.stringify({ type: 'exec', id: job.id, code })}\n`,
-          (error: unknown) => {
-            if (error !== null && error !== undefined) {
-              this.fail(
-                child,
-                new Error(`Failed to write to node_repl kernel: ${errorMessage(error)}`)
-              )
-            }
+        child.stdin.write(`${JSON.stringify({ type: 'exec', id: job.id, code })}\n`, (error) => {
+          if (error !== null && error !== undefined) {
+            this.handleKernelWriteError(child, error)
           }
-        )
+        })
       } catch (error: unknown) {
         this.finishJob(job, 'failed', error instanceof Error ? error : new Error(String(error)))
       }
@@ -330,6 +325,9 @@ export class ReplController {
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
       this.handleStderr(chunk)
+    })
+    child.stdin.on('error', (error) => {
+      this.handleKernelWriteError(child, error)
     })
     child.once('close', (code, signal) => {
       this.handleClose(child, code ?? undefined, signal ?? undefined)
@@ -428,6 +426,23 @@ export class ReplController {
     this.finishJob(job, 'failed', error)
   }
 
+  private handleKernelWriteError(child: KernelProcess, error: unknown) {
+    if (child !== this.child) {
+      return
+    }
+
+    const job = this.activeJob
+    if (job?.state === 'cancelling') {
+      job.kernelState = 'terminated'
+      void this.stop().finally(() => {
+        this.finishJob(job, 'cancelled', { output: '', attachments: [] })
+      })
+      return
+    }
+
+    this.fail(child, new Error(`Failed to write to node_repl kernel: ${errorMessage(error)}`))
+  }
+
   private handleStderr(chunk: string) {
     this.stderrFragment += chunk
     const lines = this.stderrFragment.split(/\r?\n/v)
@@ -507,52 +522,71 @@ export class ReplController {
     this.child = undefined
   }
 
-  private async stop() {
+  private async stopChild(terminate: (child: KernelProcess) => Promise<void>) {
+    if (this.stopping) {
+      await this.stopping
+      return
+    }
+
     const { child } = this
     if (!child) {
       return
     }
 
     this.detach(child)
-    if (hasChildExited(child)) {
-      return
-    }
-
-    // Graceful first: closing stdin lets the kernel release browser/profile
-    // locks before escalation becomes necessary.
+    const stopping = terminate(child)
+    this.stopping = stopping
     try {
-      child.stdin.end()
-    } catch {
-      /*
-      Stdin already closed
-      */
+      await stopping
+    } finally {
+      if (this.stopping === stopping) {
+        this.stopping = undefined
+      }
     }
+  }
 
-    if (await hasChildClosed(child, 1500)) {
-      return
-    }
+  private async stop() {
+    return this.stopChild(async (child) => {
+      if (hasChildExited(child)) {
+        return
+      }
 
-    try {
-      child.kill('SIGTERM')
-    } catch {
-      /*
-      Already exited
-      */
-    }
+      // Graceful first: closing stdin lets the kernel release browser/profile
+      // locks before escalation becomes necessary.
+      try {
+        child.stdin.end()
+      } catch {
+        /*
+        Stdin already closed
+        */
+      }
 
-    if (await hasChildClosed(child, 1500)) {
-      return
-    }
+      if (await hasChildClosed(child, 1500)) {
+        return
+      }
 
-    try {
-      child.kill('SIGKILL')
-    } catch {
-      /*
-      Already exited
-      */
-    }
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        /*
+        Already exited
+        */
+      }
 
-    await hasChildClosed(child, 2000)
+      if (await hasChildClosed(child, 1500)) {
+        return
+      }
+
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        /*
+        Already exited
+        */
+      }
+
+      await hasChildClosed(child, 2000)
+    })
   }
 
   // Remove the scratch directory only after Chromium releases its profile lock.
@@ -693,7 +727,7 @@ export class ReplController {
       if (child && this.activeJob === job) {
         child.stdin.write(`${JSON.stringify({ type: 'cancel', id: job.id })}\n`, (error) => {
           if (error) {
-            this.fail(child, new Error(`Failed to write to node_repl kernel: ${error.message}`))
+            this.handleKernelWriteError(child, error)
           }
         })
         job.cancelFallback = setTimeout(() => {
@@ -701,7 +735,6 @@ export class ReplController {
             return
           }
 
-          child.kill('SIGINT')
           job.cancelFallback = setTimeout(() => {
             if (this.activeJob !== job || job.state !== 'cancelling') {
               return
@@ -712,7 +745,7 @@ export class ReplController {
               this.finishJob(job, 'cancelled', { output: '', attachments: [] })
             })
           }, CANCEL_FORCE_WAIT_MS)
-        }, CANCEL_INTERRUPT_WAIT_MS)
+        }, CANCEL_COOPERATIVE_WAIT_MS)
       }
     }
 
@@ -740,12 +773,7 @@ export class ReplController {
       this.finishJob(this.activeJob, 'cancelled', this.activeJob.result)
     }
 
-    const { child } = this
-    if (child) {
-      this.detach(child)
-      await terminateChild(child)
-    }
-
+    await this.stopChild(terminateChild)
     await this.removeScratch()
   }
 }

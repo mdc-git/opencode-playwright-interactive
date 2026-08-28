@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  // Replace the globally deployed plugin with the local wrapper below.
   "plugins": [
     "-github.node_repl",
     "./local-node-repl.ts"
