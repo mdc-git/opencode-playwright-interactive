@@ -32,7 +32,7 @@ function applyCommandTransform(commands: CommandDraft, execute: CommandDefinitio
 }
 
 export default Plugin.define({
-  id: 'local.node-repl',
+  id: 'github.node_repl',
   effect: Effect.fn(function* (context) {
     const pluginDir = fileURLToPath(new URL('.', import.meta.url))
     const scriptDirectory = fileURLToPath(new URL('scripts/', import.meta.url))
