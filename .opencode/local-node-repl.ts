@@ -1,6 +1,6 @@
-import plugin from "../plugins/node-repl/index.ts"
+import plugin from '../plugins/node-repl/index.ts'
 
 export default {
   ...plugin,
-  id: "local.node_repl",
+  id: 'local.node_repl'
 }

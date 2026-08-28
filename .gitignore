@@ -1,3 +1,8 @@
-# Local OpenCode install/test artifacts (plugins, node_modules, session plans).
-.opencode/
-node_modules
+# Local OpenCode runtime artifacts (generated state remains ignored).
+node_modules/
+!.opencode/
+.opencode/*
+!.opencode/opencode.jsonc
+!.opencode/local-node-repl.ts
+!.opencode/commands/
+!.opencode/commands/deploy.md

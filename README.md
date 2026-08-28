@@ -125,11 +125,26 @@ other declared dependencies into an isolated cache, and loads the plugin. See
 
 ## Local development
 
-This repository includes a local V2 configuration under `.opencode/`. It removes
+This repository includes a tracked local V2 harness in `.opencode/`. It removes
 the globally configured `github.node_repl` plugin by its exported ID and loads
 `./local-node-repl.ts` instead. That wrapper assigns the local instance the
 `local.node_repl` ID, preventing a duplicate plugin registration while the
 working tree is used as the source.
+
+Run the private server and TUI from the repository root:
+
+```sh
+cd /Storage/Development/opencode-playwright-interactive
+npm install
+opencode2 --standalone
+```
+
+Do not set `OPENCODE_CONFIG_DIR` for this normal checkout workflow. OpenCode
+uses the global configuration as the base and merges the project
+`.opencode/opencode.jsonc` on top of it. The removal operation prevents the
+deployed plugin and the local wrapper from registering the same plugin ID.
+
+This is a server-only plugin; it does not provide a separate TUI addon.
 
 When OpenCode is running from this repository, the plugin registry should show
 `local.node_repl` with a local source. Local development does not depend on the
@@ -150,6 +165,56 @@ QA session with a single prompt:
 The command activates the `playwright-interactive` skill and instructs the agent
 to run setup and select the correct startup mode before carrying out the task.
 The skill can also be activated directly without the command.
+
+## Verify
+
+Restart the V2 service:
+
+```sh
+opencode2 service restart
+```
+
+From a project where the plugin should be active, check the loaded plugins:
+
+```sh
+opencode2 api get "/api/plugin?location[directory]=$(pwd)"
+```
+
+For a deployed package, the response should contain `github.node_repl`. When
+OpenCode is running from this repository, the local override should instead
+show `local.node_repl`. Start OpenCode in that project and confirm that the
+`playwright-interactive` skill and native `node_repl` tools are available.
+
+The first browser request installs the supported Playwright package, matching
+Chromium, and Camoufox under `~/.cache/opencode/playwright` by default. Later
+sessions reuse that installation.
+
+## Git deployment
+
+The global Git installation uses the package export, not the project-local
+`.opencode/` harness. After changing source or package metadata:
+
+1. Run the developer checks below.
+2. Commit and push the change.
+3. Run `/deploy` from this repository, or remove the exact cache entry and
+   restart the background service.
+
+V2 stores the package in a cache entry named
+`~/.cache/opencode/packages/git-<sha256>/`. `/deploy` derives the exact key from
+the configured Git package string, removes that entry, and restarts the service
+so V2 fetches a fresh checkout. Do not remove a package-named cache path or use
+a broad cache glob.
+
+## Developer checks
+
+```sh
+npm install
+npm run lint
+npm run format:check
+npm run typecheck
+npm run check:deps
+npm run check:knip
+```
 
 The plugin also registers four native V2 tools:
 
@@ -198,29 +263,6 @@ dynamic `import()` for built-ins or local ESM files addressed by an explicit
 make bare dynamic package imports available. Node's module cache is authoritative
 and is not automatically invalidated when an imported file changes; reset the
 kernel before expecting an edited local ESM module to execute again.
-
-## Verify
-
-Restart the V2 service:
-
-```sh
-opencode2 service restart
-```
-
-From a project where the plugin should be active, check the loaded plugins:
-
-```sh
-opencode2 api get "/api/plugin?location[directory]=$(pwd)"
-```
-
-For a deployed package, the response should contain `github.node_repl`. When
-OpenCode is running from this repository, the local override should instead
-show `local.node_repl`. Start OpenCode in that project and confirm that the
-`playwright-interactive` skill and native `node_repl` tools are available.
-
-The first browser request installs the supported Playwright package, matching
-Chromium, and Camoufox under `~/.cache/opencode/playwright` by default. Later
-sessions reuse that installation.
 
 ## Runtime behavior
 
