@@ -175,7 +175,10 @@ The persistent kernel uses Node's built-in REPL evaluator with top-level
 `await`. Declare browser, module, and helper handles that will be reused across
 cells with `var`; those bindings can be reassigned or redeclared. `let` and
 `const` bindings also persist, but normal Node lexical rules apply, so
-redeclaring either name in a later cell raises a `SyntaxError`. Static
+redeclaring either name in a later cell raises a `SyntaxError`. An interrupted
+cell is not transactional, so a lexical name can remain reserved even when its
+awaited initializer did not finish. Use `var` or `globalThis` for names reused
+across cells, or keep scratch declarations inside an async function. Static
 `import ... from ...` declarations are unsupported by the Node REPL evaluator.
 
 Use `require()` for Node built-ins and workspace or shared-cache packages. Use
@@ -218,7 +221,7 @@ sessions reuse that installation.
 | Text output         | Limited to 1 MiB per execution.                                                                                                                                                |
 | Images              | Up to four PNG, JPEG, WebP, or GIF images, limited to 5 MiB each.                                                                                                              |
 | Foreground handoff  | Cells still active after 35 seconds continue as controller-managed background jobs.                                                                                            |
-| Job management      | list/status are immediate; wait observes for up to five seconds; cancel is cooperative and may force child-kernel termination.                                                 |
+| Job management      | list/status are immediate; wait observes for up to five seconds; cancel allows two seconds before SIGINT and five more seconds before beginning child-kernel termination.      |
 | Busy kernel         | New cells are not queued behind an active job.                                                                                                                                 |
 | Job retention       | Each session retains its 20 newest terminal job records until reset or disposal.                                                                                               |
 | Rejected promises   | A rejected final expression or detached rejection fails the relevant call without resetting the kernel. A late background rejection is reported before the next cell executes. |
@@ -233,14 +236,18 @@ OpenCode sessions do not share kernels, browser bindings, or temporary remote
 profiles.
 
 Cancellation is cooperative when possible. `wait` only observes a job and does
-not cancel a native Promise. A short synchronous evaluation may be interrupted,
-but a non-cooperative native operation can force termination of the child
-kernel. Forced termination loses that session's bindings and browser handles,
-but does not restart OpenCode or affect other sessions. The next REPL execution
+not cancel a native Promise. The controller waits two seconds after requesting
+cancellation before sending `SIGINT`, then allows five more seconds before
+beginning termination if a non-cooperative native operation remains stuck.
+Forced termination loses that
+session's bindings and browser handles, but does not restart OpenCode or affect
+other sessions. The completed job reports whether the kernel was preserved or
+terminated; the next REPL execution reports a restart when one occurred and
 must recreate the kernel, rerun setup, and execute the complete browser startup
 block before browser work resumes. `node_repl_reset` likewise destroys bindings,
-pages, contexts, and retained jobs. Cancellation does not roll back filesystem
-writes, network requests, page navigation, or other completed side effects.
+pages, contexts, and retained jobs. Cancellation is not rollback: filesystem
+writes, network requests, page navigation, browser actions, and partial lexical
+declarations may remain after either kind of cancellation.
 
 Persistent browser profiles are opt-in. When a user explicitly supplies a
 directory and asks to reuse it, the Playwright skill passes that exact

@@ -40,6 +40,26 @@ function formatJob(job: JobSnapshot) {
     lines.push(`Error: ${job.error}`)
   }
 
+  if (job.kernelState === 'preserved') {
+    lines.push(
+      'Kernel: preserved. Cancellation is not rollback; bindings and external side effects may be partial.'
+    )
+  } else if (job.kernelState === 'terminated') {
+    lines.push(
+      'Kernel: terminated. All REPL bindings and in-process browser/Appium handles were lost; external sessions may require separate cleanup.'
+    )
+  } else if (job.state === 'cancelling') {
+    lines.push(
+      'Kernel state: cancellation is still in progress; wait before submitting another cell.'
+    )
+  }
+
+  if (job.kernelRestarted) {
+    lines.push(
+      'Kernel: restarted before this cell. Previous REPL bindings and in-process browser/Appium handles are unavailable; rerun the complete startup block before browser work.'
+    )
+  }
+
   return lines.join('\n')
 }
 
@@ -76,7 +96,15 @@ export function formatJobListResult(jobs: JobSnapshot[]): Tool.Result {
 
 export function formatExecutionOutcome(outcome: ExecuteOutcome): Tool.Result {
   if (outcome.kind === 'completed') {
-    return buildResult(outcome.result)
+    const result = outcome.kernelRestarted
+      ? {
+          ...outcome.result,
+          output:
+            'Node.js REPL kernel restarted before this cell. Previous REPL bindings and in-process browser/Appium handles were lost; rerun the complete startup block before browser work.\n\n' +
+            outcome.result.output
+        }
+      : outcome.result
+    return buildResult(result)
   }
 
   if (outcome.kind === 'background') {

@@ -29,6 +29,7 @@ import type {
   JobState,
   KernelMessage,
   KernelProcess,
+  KernelState,
   Result,
   RuntimeOptions,
   SessionId,
@@ -39,8 +40,8 @@ const envKey = <const K extends string>(key: K): K => key
 
 const FOREGROUND_WAIT_MS = 35_000
 const JOB_WAIT_MS = 5000
-const CANCEL_INTERRUPT_WAIT_MS = 250
-const CANCEL_RESTART_WAIT_MS = 1500
+const CANCEL_INTERRUPT_WAIT_MS = 2000
+const CANCEL_FORCE_WAIT_MS = 5000
 const MAX_RETAINED_TERMINAL_JOBS = 20
 const MAX_PROTOCOL_LINE_BYTES = 32 * 1024 * 1024
 
@@ -51,9 +52,36 @@ type ReplJob = {
   finishedAt?: number
   result?: Result
   error?: Error
+  kernelState?: KernelState
+  kernelRestarted?: boolean
   completion: Promise<void>
   complete(): void
   cancelFallback?: NodeJS.Timeout
+}
+
+function formatCancellationState(job: ReplJob) {
+  if (job.kernelState === 'preserved') {
+    return 'Kernel preserved; cancellation is not rollback and bindings or external effects may be partial.'
+  }
+
+  if (job.kernelState === 'terminated') {
+    return 'Kernel terminated; REPL bindings and in-process browser/Appium handles were lost.'
+  }
+
+  return 'Kernel state is not yet known; inspect the completed job before continuing.'
+}
+
+function formatExecutionFailure(job: ReplJob) {
+  const error = job.error ?? new Error('node_repl execution failed')
+  if (!job.kernelRestarted) {
+    return error
+  }
+
+  return new Error(
+    'Node.js REPL kernel restarted before this cell. Previous REPL bindings and in-process browser/Appium handles were lost; rerun the complete startup block before browser work.\n\n' +
+      error.message,
+    { cause: error }
+  )
 }
 
 export class ReplController {
@@ -70,6 +98,7 @@ export class ReplController {
   private scratch?: string
   private disposed = false
   private request = 0
+  private kernelGeneration = 0
 
   constructor(
     sessionID: SessionId,
@@ -113,6 +142,9 @@ export class ReplController {
     if (job.state === 'failed' && job.error) {
       snapshot.error = job.error.message
     }
+
+    snapshot.kernelState = job.kernelState
+    snapshot.kernelRestarted = job.kernelRestarted
 
     return snapshot
   }
@@ -178,13 +210,15 @@ export class ReplController {
     this.activeJob = job
     void (async () => {
       try {
-        const child = await this.ensure()
+        const { child, wasRestarted } = await this.ensure()
+        job.kernelRestarted = wasRestarted
         if (this.disposed || this.activeJob !== job) {
           await this.stop()
           return
         }
 
         if (job.state === 'cancelling') {
+          job.kernelState = 'preserved'
           this.finishJob(job, 'cancelled', { output: '', attachments: [] })
           return
         }
@@ -263,18 +297,20 @@ export class ReplController {
 
   private async ensure() {
     if (this.child && !hasChildExited(this.child)) {
-      return this.child
+      return { child: this.child, wasRestarted: false }
     }
 
     const node = optionString(this.options, 'nodePath', 'node')
     await checkNode(node)
     const { kernelPath, scratch } = await this.prepareKernel(node)
+    const wasRestarted = this.kernelGeneration > 0
     const child = spawn(
       node,
       ['--no-warnings', kernelPath],
       this.buildSpawnOptions(kernelPath)
     ) as KernelProcess
     await this.waitForSpawn(child)
+    this.kernelGeneration += 1
     this.child = child
     // Ownership marker: lets the next service instance identify and sweep
     // scratch dirs left behind by dead services without touching live ones.
@@ -301,7 +337,7 @@ export class ReplController {
     child.once('error', (error) => {
       this.fail(child, new Error(`node_repl kernel process error: ${error.message}`))
     })
-    return child
+    return { child, wasRestarted }
   }
 
   private handleLine(child: KernelProcess, line: string) {
@@ -352,8 +388,14 @@ export class ReplController {
         output: typeof message.output === 'string' ? message.output : '',
         attachments: message.status === 'cancelled' ? [] : attachments(message.attachments)
       }
+
+      if (message.status === 'cancelled') {
+        job.kernelState = 'preserved'
+      }
+
       this.finishJob(job, message.status, result)
     } catch (error) {
+      job.kernelState = 'terminated'
       void this.stop().finally(() => {
         this.finishJob(job, 'failed', error as Error)
       })
@@ -369,8 +411,14 @@ export class ReplController {
       typeof message.output === 'string' && message.output !== ''
         ? `\nOutput before failure:\n${boundedUtf8(message.output, 8192)}`
         : ''
-    const error = new Error(`${message.error ?? 'node_repl execution failed'}${partial}`)
+    const redeclarationHint = message.error?.includes('has already been declared')
+      ? ' Top-level const/let declarations persist across cells, including interrupted cells; use var or globalThis for reusable state, or reset the kernel.'
+      : ''
+    const error = new Error(
+      `${message.error ?? 'node_repl execution failed'}${redeclarationHint}${partial}`
+    )
     if (message.error?.includes('kernel reset')) {
+      job.kernelState = 'terminated'
       void this.stop().finally(() => {
         this.finishJob(job, 'failed', error)
       })
@@ -417,7 +465,9 @@ export class ReplController {
     this.detach(child)
     const status = code === null ? `signal=${signal ?? 'unknown'}` : `code=${code}`
     const diagnostics = this.stderrTail.length > 0 ? `; stderr: ${this.stderrTail.join(' | ')}` : ''
+
     if (this.activeJob) {
+      this.activeJob.kernelState = 'terminated'
       if (this.activeJob.state === 'cancelling') {
         this.finishJob(this.activeJob, 'cancelled', { output: '', attachments: [] })
       } else {
@@ -436,6 +486,10 @@ export class ReplController {
     }
 
     const job = this.activeJob
+    if (job) {
+      job.kernelState = 'terminated'
+    }
+
     void this.stop().finally(() => {
       if (job) {
         this.finishJob(job, 'failed', error)
@@ -575,14 +629,18 @@ export class ReplController {
     }
 
     if (job.state === 'completed') {
-      return { kind: 'completed', result: job.result ?? { output: '', attachments: [] } }
+      return {
+        kind: 'completed',
+        result: job.result ?? { output: '', attachments: [] },
+        kernelRestarted: job.kernelRestarted
+      }
     }
 
     if (job.state === 'cancelled') {
-      throw new Error('JavaScript execution cancelled')
+      throw new Error(`JavaScript execution cancelled. ${formatCancellationState(job)}`)
     }
 
-    throw job.error ?? new Error('node_repl execution failed')
+    throw formatExecutionFailure(job)
   }
 
   listJobs(): JobSnapshot[] {
@@ -649,10 +707,11 @@ export class ReplController {
               return
             }
 
+            job.kernelState = 'terminated'
             void this.stop().finally(() => {
               this.finishJob(job, 'cancelled', { output: '', attachments: [] })
             })
-          }, CANCEL_RESTART_WAIT_MS)
+          }, CANCEL_FORCE_WAIT_MS)
         }, CANCEL_INTERRUPT_WAIT_MS)
       }
     }

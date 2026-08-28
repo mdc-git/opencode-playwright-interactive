@@ -18,6 +18,7 @@ export type Attachment = { type: 'file'; mime: string; url: string; filename?: s
 export type Result = { output: string; attachments: Attachment[] }
 
 export type JobState = 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
+export type KernelState = 'preserved' | 'terminated'
 export type JobSnapshot = {
   id: string
   state: JobState
@@ -26,9 +27,11 @@ export type JobSnapshot = {
   output?: string
   attachments?: Attachment[]
   error?: string
+  kernelState?: KernelState
+  kernelRestarted?: boolean
 }
 export type ExecuteOutcome =
-  | { kind: 'completed'; result: Result }
+  | { kind: 'completed'; result: Result; kernelRestarted?: boolean }
   | { kind: 'background'; job: JobSnapshot }
   | { kind: 'busy'; job: JobSnapshot }
 export type JobActionOutcome =

@@ -15,7 +15,7 @@ const SKILL_DESC =
 const PLUGIN_DESC =
   'Open a persistent Playwright browser or Electron session for interactive QA. Pass a target URL, app path, or task description.'
 const PLUGIN_TEMPLATE =
-  'Use the playwright-interactive skill to handle this request. The plugin exposes node_repl, node_repl_job, node_repl_reset, and node_repl_playwright_setup as native tools. First call node_repl_playwright_setup({}). Then send each browser cell as plain JavaScript in node_repl({ code: ... }). Use node_repl_job(...) and node_repl_reset(...) directly as needed. Select the correct startup mode, use Playwright for browser lifecycle and locators, and use humanized input only for remote-site interactions.'
+  'Use the playwright-interactive skill to handle this request. The plugin exposes node_repl, node_repl_job, node_repl_reset, and node_repl_playwright_setup as native tools. First call node_repl_playwright_setup({}). Then send each browser cell as plain JavaScript in node_repl({ code: ... }). Use node_repl_job(...) and node_repl_reset(...) directly as needed. Select the correct startup mode, use Playwright for browser lifecycle and locators, and use humanized input only for remote-site interactions. Cancellation may terminate only this session kernel if a native operation remains stuck; follow the reported kernel state, use var or globalThis for reused state, and rerun the complete startup block only after a reported termination or restart.'
 
 function applySkillTransform(skills: SkillDraft, pluginDir: string, skillBody: string) {
   skills.add({
