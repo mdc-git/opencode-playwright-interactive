@@ -59,6 +59,8 @@ type ReplJob = {
   cancelFallback?: NodeJS.Timeout
 }
 
+type KernelStartup = { child: KernelProcess; wasRestarted: boolean }
+
 function formatCancellationState(job: ReplJob) {
   if (job.kernelState === 'preserved') {
     return 'Kernel preserved; cancellation is not rollback and bindings or external effects may be partial.'
@@ -100,6 +102,7 @@ export class ReplController {
   private request = 0
   private kernelGeneration = 0
   private stopping?: Promise<void>
+  private starting?: Promise<KernelStartup>
 
   constructor(
     sessionID: SessionId,
@@ -211,7 +214,18 @@ export class ReplController {
     this.activeJob = job
     void (async () => {
       try {
-        const { child, wasRestarted } = await this.ensure()
+        const startup = this.ensure()
+        this.starting = startup
+        let startupResult: KernelStartup
+        try {
+          startupResult = await startup
+        } finally {
+          if (this.starting === startup) {
+            this.starting = undefined
+          }
+        }
+
+        const { child, wasRestarted } = startupResult
         job.kernelRestarted = wasRestarted
         if (this.disposed || this.activeJob !== job) {
           await this.stop()
@@ -290,7 +304,7 @@ export class ReplController {
     })
   }
 
-  private async ensure() {
+  private async ensure(): Promise<KernelStartup> {
     if (this.child && !hasChildExited(this.child)) {
       return { child: this.child, wasRestarted: false }
     }
@@ -630,6 +644,13 @@ export class ReplController {
     this.scratch = undefined
   }
 
+  private async waitForStartup() {
+    const startup = this.starting
+    if (startup) {
+      await startup.catch(() => undefined)
+    }
+  }
+
   matchesDirectory(directory: WorkspaceDirectory) {
     return this.directory === directory
   }
@@ -759,9 +780,11 @@ export class ReplController {
 
     this.disposed = true
     if (this.activeJob) {
+      this.activeJob.kernelState = 'terminated'
       this.finishJob(this.activeJob, 'cancelled', this.activeJob.result)
     }
 
+    await this.waitForStartup()
     await this.stop()
     await this.removeScratch()
   }
@@ -770,9 +793,11 @@ export class ReplController {
   async disposeForShutdown() {
     this.disposed = true
     if (this.activeJob) {
+      this.activeJob.kernelState = 'terminated'
       this.finishJob(this.activeJob, 'cancelled', this.activeJob.result)
     }
 
+    await this.waitForStartup()
     await this.stopChild(terminateChild)
     await this.removeScratch()
   }
