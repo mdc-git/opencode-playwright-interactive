@@ -64,15 +64,6 @@ function setJobResult(job: ReplJob, value?: Result | Error) {
   }
 }
 
-export function clearCancelFallback(job: ReplJob) {
-  if (!job.cancelFallback) {
-    return
-  }
-
-  clearTimeout(job.cancelFallback)
-  job.cancelFallback = undefined
-}
-
 export function executionResult(message: Extract<KernelMessage, { type: 'exec_result' }>): Result {
   return {
     output: typeof message.output === 'string' ? message.output : '',

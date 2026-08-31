@@ -115,14 +115,10 @@ export async function checkNode(path: string) {
   return check
 }
 
-function ignoreFailure(operation: () => void) {
+export function ignoreFailure(operation: () => void) {
   try {
     operation()
-  } catch {
-    /*
-    Child already exited and closed the stream / accepted no signals
-    */
-  }
+  } catch {}
 }
 
 export async function terminateChild(child: KernelProcess) {
@@ -214,18 +210,7 @@ async function sweepOwnerlessDir(directory: string) {
     if (Date.now() - info.mtimeMs > OWNERLESS_SCRATCH_MAX_AGE_MS) {
       await rm(directory, { recursive: true, force: true }).catch(() => undefined)
     }
-  } catch {
-    /*
-    Already gone
-    */
-  }
-}
-
-async function sweepScratchDirectory(directory: string, removed: string[]) {
-  const isHandled = await didSweepOwnedDir(directory, removed)
-  if (!isHandled) {
-    await sweepOwnerlessDir(directory)
-  }
+  } catch {}
 }
 
 async function sweepScratchEntry(entry: string, removed: string[]) {
@@ -241,8 +226,13 @@ async function sweepScratchEntry(entry: string, removed: string[]) {
     }
 
     await sweepScratchDirectory(directory, removed)
-  } catch {
-    // Entry vanished or is unreadable; nothing to sweep.
+  } catch {}
+}
+
+async function sweepScratchDirectory(directory: string, removed: string[]) {
+  const isHandled = await didSweepOwnedDir(directory, removed)
+  if (!isHandled) {
+    await sweepOwnerlessDir(directory)
   }
 }
 

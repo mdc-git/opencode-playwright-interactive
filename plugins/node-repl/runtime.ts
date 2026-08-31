@@ -1,12 +1,7 @@
 import { ReplController } from './runtime-controller.ts'
-import { setupPlaywright } from './runtime-cache.ts'
 import { sweepStaleScratchDirs } from './runtime-process.ts'
-import type {
-  ExecuteOutcome,
-  RuntimeOptions,
-  SessionId,
-  WorkspaceDirectory
-} from './runtime-types.ts'
+import type { JobInput } from './tool-schema.ts'
+import type { RuntimeOptions, SessionId, WorkspaceDirectory } from './runtime-types.ts'
 
 export class ReplRuntime {
   private readonly controllers = new Map<SessionId, ReplController>()
@@ -20,35 +15,17 @@ export class ReplRuntime {
     sweepStaleScratchDirs().catch(() => undefined)
   }
 
-  private async disposeController(sessionID: SessionId, controller: ReplController) {
-    this.controllers.delete(sessionID)
-    await controller.dispose()
-  }
-
-  private async matchingController(sessionID: SessionId, directory: WorkspaceDirectory) {
-    const existing = this.controllers.get(sessionID)
-    if (!existing || existing.matchesDirectory(directory)) {
-      return existing
+  private async controllerFor(sessionID: SessionId, directory: WorkspaceDirectory) {
+    let controller = this.controllers.get(sessionID)
+    if (controller && controller.directory !== directory) {
+      this.controllers.delete(sessionID)
+      await controller.dispose()
+      controller = undefined
     }
 
-    await this.disposeController(sessionID, existing)
-    return undefined
-  }
-
-  private async controllerFor(sessionID: SessionId, directory: WorkspaceDirectory) {
-    let controller = await this.matchingController(sessionID, directory)
     if (!controller) {
       controller = new ReplController(sessionID, directory, this.options, this.scriptDirectory)
       this.controllers.set(sessionID, controller)
-    }
-
-    return controller
-  }
-
-  private existingController(sessionID: SessionId) {
-    const controller = this.controllers.get(sessionID)
-    if (!controller) {
-      throw new Error('Node.js REPL kernel was not initialized.')
     }
 
     return controller
@@ -63,20 +40,26 @@ export class ReplRuntime {
     return controller.execute(code)
   }
 
-  listJobs(sessionID: SessionId) {
-    return this.controllers.get(sessionID)?.listJobs() ?? []
-  }
+  async job(sessionID: SessionId, input: JobInput) {
+    if (input.action === 'list') {
+      const controller = this.controllers.get(sessionID)
+      if (!controller) {
+        return []
+      }
 
-  getJob(sessionID: SessionId, id: string) {
-    return this.existingController(sessionID).getJob(id)
-  }
+      return controller.listJobs()
+    }
 
-  async waitForJob(sessionID: SessionId, id: string) {
-    return this.existingController(sessionID).waitForJob(id)
-  }
+    const controller = this.controllers.get(sessionID)
+    if (!controller) {
+      throw new Error('Node.js REPL kernel was not initialized.')
+    }
 
-  async cancelJob(sessionID: SessionId, id: string) {
-    return this.existingController(sessionID).cancelJob(id)
+    return {
+      status: () => controller.getJob(input.id),
+      wait: async () => controller.waitForJob(input.id),
+      cancel: async () => controller.cancelJob(input.id)
+    }[input.action]()
   }
 
   async reset(sessionID: SessionId) {
@@ -85,7 +68,8 @@ export class ReplRuntime {
       return false
     }
 
-    await this.disposeController(sessionID, controller)
+    this.controllers.delete(sessionID)
+    await controller.dispose()
     return true
   }
 
@@ -96,13 +80,9 @@ export class ReplRuntime {
 
     this.disposed = true
     const disposals = Array.from(this.controllers.values(), async (controller) =>
-      controller.disposeForShutdown()
+      controller.dispose(true)
     )
     this.controllers.clear()
     await Promise.allSettled(disposals)
-  }
-
-  async setupPlaywright(isForce = false) {
-    return setupPlaywright(this.options, isForce)
   }
 }

@@ -6,8 +6,6 @@ import { withCacheLock } from './runtime-cache-lock.ts'
 import { boundedUtf8, doesExist, errorMessage, execFileAsync } from './runtime-process.ts'
 import type { RuntimeOptions } from './runtime-types.ts'
 
-const envKey = <const K extends string>(key: K): K => key
-
 const PLAYWRIGHT_VERSION = '1.60.0'
 const CAMOUFOX_VERSION = '0.12.0'
 const CAMOUFOX_PACKAGE = 'camoufox-js'
@@ -105,10 +103,6 @@ async function isChromiumExecutablePresent(directory: string, browserDirectory: 
   }
 }
 
-async function isCamoufoxReady(camoufoxDirectory: string) {
-  return doesExist(join(camoufoxDirectory, 'version.json'))
-}
-
 type InstallConfig = {
   options: RuntimeOptions
   directory: string
@@ -201,7 +195,7 @@ async function installChromium(config: InstallConfig, browserDirectory: string) 
 async function installCamoufox(config: InstallConfig, camoufoxDirectory: string) {
   const { directory, isForce } = config
   const camoufoxMarker = join(directory, `.camoufox-${CAMOUFOX_VERSION}`)
-  const isCamoufoxInstalled = async () => isCamoufoxReady(camoufoxDirectory)
+  const isCamoufoxInstalled = async () => doesExist(join(camoufoxDirectory, 'version.json'))
   if (await isMarkerReady(camoufoxMarker, isForce, isCamoufoxInstalled)) {
     return
   }
@@ -218,11 +212,11 @@ export async function setupPlaywright(options: RuntimeOptions, isForce = false) 
   const directory = playwrightCacheDirectory(options)
   const browserDirectory = playwrightBrowserDirectory(options)
   const camoufoxDirectory = join(directory, CAMOUFOX_INSTALL_DIR_NAME)
-  const environment = {
-    ...process.env,
-    [envKey('PLAYWRIGHT_BROWSERS_PATH')]: browserDirectory,
-    [envKey('CAMOUFOX_INSTALL_DIR')]: camoufoxDirectory
-  }
+  const environment = Object.fromEntries([
+    ...Object.entries(process.env),
+    ['PLAYWRIGHT_BROWSERS_PATH', browserDirectory],
+    ['CAMOUFOX_INSTALL_DIR', camoufoxDirectory]
+  ])
   await mkdir(directory, { recursive: true })
   await withCacheLock(join(directory, '.playwright-setup'), async () => {
     const config: InstallConfig = { options, directory, isForce, environment }

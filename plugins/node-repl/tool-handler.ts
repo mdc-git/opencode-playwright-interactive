@@ -20,10 +20,12 @@ import {
 } from './tool-schema.ts'
 import { errorMessage } from './runtime-process.ts'
 import type { ReplRuntime } from './runtime.ts'
+import { setupPlaywright } from './runtime-cache.ts'
+import type { RuntimeOptions } from './runtime-types.ts'
 
 type SessionGetter = Plugin.Context['session']['get']
 
-const key = <const K extends string>(value: K): K => value
+const sessionIdField = 'sessionID'
 
 const asToolError = (error: unknown) =>
   error instanceof ToolError ? error : new ToolError({ message: errorMessage(error), error })
@@ -51,7 +53,7 @@ const makeReplExecutor =
   (input: unknown, toolContext: Tool.Context) =>
     Effect.gen(function* () {
       yield* toolContext.progress({ title: 'Node.js REPL' })
-      const session = yield* sessionGet({ [key('sessionID')]: toolContext.sessionID }).pipe(
+      const session = yield* sessionGet({ [sessionIdField]: toolContext.sessionID }).pipe(
         Effect.mapError(asToolError)
       )
       const result = yield* attempt(async () =>
@@ -68,28 +70,8 @@ const makeJobExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext: 
   Effect.gen(function* () {
     yield* toolContext.progress({ title: 'Node.js REPL job' })
     const args = input as JobInput
-    if (args.action === 'list') {
-      const jobs = yield* Effect.try({
-        try: () => runtime.listJobs(toolContext.sessionID),
-        catch: asToolError
-      })
-      return formatJobListResult(jobs)
-    }
-
-    const run = async () => {
-      if (args.action === 'status') {
-        return runtime.getJob(toolContext.sessionID, args.id)
-      }
-
-      if (args.action === 'wait') {
-        return runtime.waitForJob(toolContext.sessionID, args.id)
-      }
-
-      return runtime.cancelJob(toolContext.sessionID, args.id)
-    }
-
-    const result = yield* attempt(run)
-    return formatJobActionResult(result)
+    const result = yield* attempt(async () => runtime.job(toolContext.sessionID, args))
+    return Array.isArray(result) ? formatJobListResult(result) : formatJobActionResult(result)
   })
 
 const makeResetExecutor = (runtime: ReplRuntime) => (_input: unknown, toolContext: Tool.Context) =>
@@ -102,14 +84,22 @@ const makeResetExecutor = (runtime: ReplRuntime) => (_input: unknown, toolContex
     return { output, content: output }
   })
 
-const makeSetupExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext: Tool.Context) =>
-  Effect.gen(function* () {
-    yield* toolContext.progress({ title: 'Set Up Shared Playwright' })
-    const output = yield* attempt(async () => runtime.setupPlaywright((input as SetupInput).force))
-    return { output, content: output }
-  })
+const makeSetupExecutor =
+  (options: RuntimeOptions) => (input: unknown, toolContext: Tool.Context) =>
+    Effect.gen(function* () {
+      yield* toolContext.progress({ title: 'Set Up Shared Playwright' })
+      const output = yield* attempt(async () =>
+        setupPlaywright(options, (input as SetupInput).force)
+      )
+      return { output, content: output }
+    })
 
-export function registerTools(tools: ToolDraft, runtime: ReplRuntime, sessionGet: SessionGetter) {
+export function registerTools(
+  tools: ToolDraft,
+  runtime: ReplRuntime,
+  sessionGet: SessionGetter,
+  options: RuntimeOptions
+) {
   tools.add({
     name: 'node_repl',
     description: REPL_DESC,
@@ -140,6 +130,6 @@ export function registerTools(tools: ToolDraft, runtime: ReplRuntime, sessionGet
     input: setupInput,
     output: textOutput,
     options: { permission: 'node_repl', codemode: false },
-    execute: makeSetupExecutor(runtime)
+    execute: makeSetupExecutor(options)
   })
 }

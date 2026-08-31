@@ -1,6 +1,5 @@
 import { KernelController } from './runtime-kernel.ts'
 import {
-  clearCancelFallback,
   createReplJob,
   executionFailureError,
   executionResult,
@@ -23,7 +22,7 @@ import type {
 
 export class ReplControllerCore {
   private request = 0
-  protected readonly directory: WorkspaceDirectory
+  readonly directory: WorkspaceDirectory
   protected readonly kernel: KernelController
   protected activeJob?: ReplJob
   protected readonly jobs = new Map<string, ReplJob>()
@@ -84,7 +83,7 @@ export class ReplControllerCore {
       return
     }
 
-    this.kernel.writeExecution(child, job.id, code)
+    this.kernel.send(child, { type: 'exec', id: job.id, code })
   }
 
   private handleKernelMessage(message: KernelMessage) {
@@ -213,7 +212,10 @@ export class ReplControllerCore {
     setJobOutcome(job, state, value)
     job.state = state
     job.finishedAt = Date.now()
-    clearCancelFallback(job)
+    if (job.cancelFallback) {
+      clearTimeout(job.cancelFallback)
+      job.cancelFallback = undefined
+    }
 
     if (this.activeJob === job) {
       this.activeJob = undefined

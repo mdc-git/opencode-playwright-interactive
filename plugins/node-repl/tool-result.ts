@@ -3,7 +3,7 @@ import type { Attachment, ExecuteOutcome, JobSnapshot } from './runtime-types.ts
 
 type ToolAttachment = Pick<Attachment, 'url' | 'mime' | 'filename'>
 
-const metadataKey = <const K extends string>(key: K): K => key
+const jobIdField = 'job_id'
 
 function buildResult(result: {
   output: string
@@ -101,7 +101,7 @@ function buildJobResult(job: JobSnapshot): Tool.Result {
 export function formatJobActionResult(job: JobSnapshot): Tool.Result {
   return {
     ...buildJobResult(job),
-    metadata: { [metadataKey('job_id')]: job.id, state: job.state }
+    metadata: { [jobIdField]: job.id, state: job.state }
   }
 }
 
@@ -131,7 +131,7 @@ export function formatExecutionOutcome(outcome: ExecuteOutcome): Tool.Result {
     return {
       output,
       content: output,
-      metadata: { [metadataKey('job_id')]: outcome.job.id, state: outcome.job.state }
+      metadata: { [jobIdField]: outcome.job.id, state: outcome.job.state }
     }
   }
 
@@ -139,6 +139,6 @@ export function formatExecutionOutcome(outcome: ExecuteOutcome): Tool.Result {
   return {
     output,
     content: output,
-    metadata: { [metadataKey('job_id')]: outcome.job.id, state: outcome.job.state }
+    metadata: { [jobIdField]: outcome.job.id, state: outcome.job.state }
   }
 }

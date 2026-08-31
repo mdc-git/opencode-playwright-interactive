@@ -34,7 +34,7 @@ export default defineConfig([
         { pattern: 'plugins/node-repl/runtime-controller.ts', category: 'core' },
         { pattern: 'plugins/node-repl/runtime-controller-core.ts', category: 'core' },
         { pattern: 'plugins/node-repl/runtime-job.ts', category: 'core' },
-        { pattern: 'plugins/node-repl/runtime-kernel-base.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/runtime-kernel-start.ts', category: 'core' },
         { pattern: 'plugins/node-repl/runtime-kernel.ts', category: 'core' },
         { pattern: 'plugins/node-repl/runtime-process.ts', category: 'core' },
         { pattern: 'plugins/node-repl/runtime-protocol.ts', category: 'core' },

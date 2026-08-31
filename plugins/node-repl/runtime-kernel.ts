@@ -1,19 +1,36 @@
 import { Buffer } from 'node:buffer'
-import { rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  boundedUtf8,
-  doesExist,
-  hasChildClosed,
-  hasChildExited,
-  terminateChild
-} from './runtime-process.ts'
-import { KernelControllerBase } from './runtime-kernel-base.ts'
-import type { KernelMessage, KernelProcess } from './runtime-types.ts'
+import { createInterface, type Interface as ReadLineInterface } from 'node:readline'
+import { boundedUtf8, doesExist, hasChildExited, terminateChild } from './runtime-process.ts'
+import { gracefullyStopChild, startKernel } from './runtime-kernel-start.ts'
+import type {
+  KernelMessage,
+  KernelProcess,
+  RuntimeOptions,
+  SessionId,
+  WorkspaceDirectory
+} from './runtime-types.ts'
 
 const MAX_PROTOCOL_LINE_BYTES = 32 * 1024 * 1024
 
 type KernelRequest = { type: 'exec'; id: string; code: string } | { type: 'cancel'; id: string }
+
+type KernelControllerOptions = {
+  sessionId: SessionId
+  directory: WorkspaceDirectory
+  options: RuntimeOptions
+  scriptDirectory: string
+  callbacks: {
+    onMessage: (message: KernelMessage) => void
+    onWriteError: (error: unknown) => void
+    onFailure: (error: Error) => void
+    onClose: (error: Error) => void
+  }
+}
+
+type KernelStartup = { child: KernelProcess; wasRestarted: boolean }
 
 function unexpectedExitError(
   code: number | undefined,
@@ -25,46 +42,61 @@ function unexpectedExitError(
   return new Error(`node_repl kernel exited unexpectedly (${status})${diagnostics}`)
 }
 
-function closeChildStdin(child: KernelProcess) {
-  try {
-    child.stdin.end()
-  } catch {
-    /*
-    Stdin already closed
-    */
-  }
-}
+export class KernelController {
+  private readonly config: KernelControllerOptions
+  private child?: KernelProcess
+  private reader?: ReadLineInterface
+  private stderrTail: string[] = []
+  private stderrFragment = ''
+  private scratch?: string
+  private kernelGeneration = 0
+  private stopping?: Promise<void>
+  private starting?: Promise<KernelStartup>
 
-function signalChild(child: KernelProcess, signal: NodeJS.Signals) {
-  try {
-    child.kill(signal)
-  } catch {
-    /*
-    Already exited
-    */
-  }
-}
-
-async function gracefullyStopChild(child: KernelProcess) {
-  if (hasChildExited(child)) {
-    return
+  constructor(config: KernelControllerOptions) {
+    this.config = config
   }
 
-  closeChildStdin(child)
-  if (await hasChildClosed(child, 1500)) {
-    return
+  private async ensure(): Promise<KernelStartup> {
+    if (this.child && !hasChildExited(this.child)) {
+      return { child: this.child, wasRestarted: false }
+    }
+
+    const scratch = this.scratch ?? (await mkdtemp(join(tmpdir(), 'opencode-node-repl-')))
+    this.scratch = scratch
+    const child = await startKernel({
+      sessionId: this.config.sessionId,
+      directory: this.config.directory,
+      options: this.config.options,
+      scriptDirectory: this.config.scriptDirectory,
+      scratch
+    })
+    const wasRestarted = this.kernelGeneration > 0
+    this.stderrTail = []
+    this.stderrFragment = ''
+    this.kernelGeneration += 1
+    this.child = child
+    child.stdout.resume()
+    this.reader = createInterface({ input: child.stdio[3], crlfDelay: Infinity })
+    this.reader.on('line', (line) => {
+      this.handleLine(child, line)
+    })
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk: string) => {
+      this.handleStderr(chunk)
+    })
+    child.stdin.on('error', (error) => {
+      this.handleKernelWriteError(child, error)
+    })
+    child.once('close', (code, signal) => {
+      this.handleClose(child, code ?? undefined, signal ?? undefined)
+    })
+    child.once('error', (error) => {
+      this.fail(child, new Error(`node_repl kernel process error: ${error.message}`))
+    })
+    return { child, wasRestarted }
   }
 
-  signalChild(child, 'SIGTERM')
-  if (await hasChildClosed(child, 1500)) {
-    return
-  }
-
-  signalChild(child, 'SIGKILL')
-  await hasChildClosed(child, 2000)
-}
-
-export class KernelController extends KernelControllerBase {
   private parseKernelLine(child: KernelProcess, line: string) {
     if (child !== this.child) {
       return
@@ -81,14 +113,6 @@ export class KernelController extends KernelControllerBase {
       this.fail(child, new Error('node_repl kernel sent invalid JSON'))
       return undefined
     }
-  }
-
-  private write(child: KernelProcess, message: KernelRequest) {
-    child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
-      if (error) {
-        this.handleKernelWriteError(child, error)
-      }
-    })
   }
 
   private pushStderr(line: string) {
@@ -117,29 +141,6 @@ export class KernelController extends KernelControllerBase {
     this.reader?.close()
     this.reader = undefined
     this.child = undefined
-  }
-
-  private async stopChild(terminate: (child: KernelProcess) => Promise<void>) {
-    if (this.stopping) {
-      await this.stopping
-      return
-    }
-
-    const { child } = this
-    if (!child) {
-      return
-    }
-
-    this.detach(child)
-    const stopping = terminate(child)
-    this.stopping = stopping
-    try {
-      await stopping
-    } finally {
-      if (this.stopping === stopping) {
-        this.stopping = undefined
-      }
-    }
   }
 
   private async removeScratch() {
@@ -181,20 +182,20 @@ export class KernelController extends KernelControllerBase {
     this.scratch = undefined
   }
 
-  protected handleLine(child: KernelProcess, line: string) {
+  private handleLine(child: KernelProcess, line: string) {
     const message = this.parseKernelLine(child, line)
     if (message !== undefined) {
-      this.callbacks.onMessage(message)
+      this.config.callbacks.onMessage(message)
     }
   }
 
-  protected handleKernelWriteError(child: KernelProcess, error: unknown) {
+  private handleKernelWriteError(child: KernelProcess, error: unknown) {
     if (child === this.child) {
-      this.callbacks.onWriteError(error)
+      this.config.callbacks.onWriteError(error)
     }
   }
 
-  protected handleStderr(chunk: string) {
+  private handleStderr(chunk: string) {
     this.stderrFragment += chunk
     const lines = this.stderrFragment.split(/\r?\n/v)
     this.stderrFragment = lines.pop() ?? ''
@@ -203,7 +204,7 @@ export class KernelController extends KernelControllerBase {
     }
   }
 
-  protected handleClose(
+  private handleClose(
     child: KernelProcess,
     code: number | undefined,
     signal: NodeJS.Signals | undefined
@@ -214,22 +215,37 @@ export class KernelController extends KernelControllerBase {
 
     this.flushStderr()
     this.detach(child)
-    this.callbacks.onClose(unexpectedExitError(code, signal, this.stderrTail))
+    this.config.callbacks.onClose(unexpectedExitError(code, signal, this.stderrTail))
   }
 
-  protected fail(child: KernelProcess, error: Error) {
+  private fail(child: KernelProcess, error: Error) {
     if (child !== this.child) {
       return
     }
 
-    this.callbacks.onFailure(error)
+    this.config.callbacks.onFailure(error)
   }
 
-  protected async waitForStartup() {
-    const startup = this.starting
-    if (startup) {
-      await startup.catch(() => undefined)
+  send(child: KernelProcess, message: KernelRequest) {
+    child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+      if (error) {
+        this.handleKernelWriteError(child, error)
+      }
+    })
+  }
+
+  async stop(isShutdown = false) {
+    const { child } = this
+    if (!child) {
+      return this.stopping
     }
+
+    this.detach(child)
+    const stopping = (isShutdown ? terminateChild : gracefullyStopChild)(child)
+    this.stopping = stopping
+    await stopping.finally(() => {
+      this.stopping = undefined
+    })
   }
 
   async awaitStartup() {
@@ -244,33 +260,22 @@ export class KernelController extends KernelControllerBase {
     }
   }
 
-  writeExecution(child: KernelProcess, id: string, code: string) {
-    this.write(child, { type: 'exec', id, code })
-  }
-
-  writeCancellation(id: string) {
+  cancel(id: string) {
     const { child } = this
     if (!child) {
       return false
     }
 
-    this.write(child, { type: 'cancel', id })
+    this.send(child, { type: 'cancel', id })
     return true
   }
 
-  async stop() {
-    return this.stopChild(gracefullyStopChild)
-  }
+  async dispose(isShutdown = false) {
+    if (this.starting) {
+      await this.starting.catch(() => undefined)
+    }
 
-  async dispose() {
-    await this.waitForStartup()
-    await this.stop()
-    await this.removeScratch()
-  }
-
-  async disposeForShutdown() {
-    await this.waitForStartup()
-    await this.stopChild(terminateChild)
+    await this.stop(isShutdown)
     await this.removeScratch()
   }
 }

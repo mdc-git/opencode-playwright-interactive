@@ -1,6 +1,6 @@
 import { ReplControllerCore } from './runtime-controller-core.ts'
 import { formatCancellationState, formatExecutionFailure, type ReplJob } from './runtime-job.ts'
-import type { ExecuteOutcome, JobSnapshot, WorkspaceDirectory } from './runtime-types.ts'
+import type { ExecuteOutcome, JobSnapshot } from './runtime-types.ts'
 
 const FOREGROUND_WAIT_MS = 35_000
 const JOB_WAIT_MS = 5000
@@ -75,13 +75,9 @@ export class ReplController extends ReplControllerCore {
 
   private cancelRunningJob(job: ReplJob) {
     job.state = 'cancelling'
-    if (this.activeJob === job && this.kernel.writeCancellation(job.id)) {
+    if (this.activeJob === job && this.kernel.cancel(job.id)) {
       this.scheduleCancelFallback(job)
     }
-  }
-
-  matchesDirectory(directory: WorkspaceDirectory) {
-    return this.directory === directory
   }
 
   async execute(code: string): Promise<ExecuteOutcome> {
@@ -152,7 +148,7 @@ export class ReplController extends ReplControllerCore {
     return this.snapshot(job)
   }
 
-  async dispose() {
+  async dispose(isShutdown = false) {
     if (this.disposed) {
       return
     }
@@ -163,16 +159,6 @@ export class ReplController extends ReplControllerCore {
       this.finishJob(this.activeJob, 'cancelled', this.activeJob.result)
     }
 
-    await this.kernel.dispose()
-  }
-
-  async disposeForShutdown() {
-    this.disposed = true
-    if (this.activeJob) {
-      this.activeJob.kernelState = 'terminated'
-      this.finishJob(this.activeJob, 'cancelled', this.activeJob.result)
-    }
-
-    await this.kernel.disposeForShutdown()
+    await this.kernel.dispose(isShutdown)
   }
 }
