@@ -115,30 +115,32 @@ export async function checkNode(path: string) {
   return check
 }
 
+function ignoreFailure(operation: () => void) {
+  try {
+    operation()
+  } catch {
+    /*
+    Child already exited and closed the stream / accepted no signals
+    */
+  }
+}
+
 export async function terminateChild(child: KernelProcess) {
   if (hasChildExited(child)) {
     return
   }
 
-  try {
+  ignoreFailure(() => {
     child.stdin.end()
-  } catch {
-    /*
-    Stdin already closed
-    */
-  }
+  })
 
   if (await hasChildClosed(child, 1200)) {
     return
   }
 
-  try {
+  ignoreFailure(() => {
     child.kill('SIGKILL')
-  } catch {
-    /*
-    Already exited
-    */
-  }
+  })
 
   await hasChildClosed(child, 1000)
 }

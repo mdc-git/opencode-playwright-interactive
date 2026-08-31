@@ -105,30 +105,41 @@ async function performClick({ currentPage, state, target, options, profile, move
   )
 }
 
+function doubleClickCount(count, clickIndex) {
+  return count === 2 ? clickIndex + 1 : 1
+}
+
+async function performTremor(currentPage, point, profile) {
+  const tremorCount = clamp(Math.round(uniform(2, profile.tremorCount + 1)), 2, 5)
+  await sequence(
+    Array.from({ length: tremorCount }, (_, index) => index),
+    async () => {
+      const tremorX = point.x + uniform(-profile.tremorAmplitude, profile.tremorAmplitude)
+      const tremorY = point.y + uniform(-profile.tremorAmplitude, profile.tremorAmplitude)
+      await currentPage.mouse.move(tremorX, tremorY)
+      await sleep(uniform(15, 45))
+    }
+  )
+}
+
+async function pressAndRelease(currentPage, button, clickCount, profile) {
+  await currentPage.mouse.down({ button, clickCount })
+  try {
+    await sleep(uniform(profile.clickHoldMin, profile.clickHoldMax))
+  } finally {
+    await currentPage.mouse.up({ button, clickCount })
+  }
+}
+
 function performClickGesture({ currentPage, state, point, button, count, profile, moveToPoint }) {
   return sequence(
     Array.from({ length: count }, (_, clickIndex) => clickIndex),
     async (clickIndex) => {
       await moveToPoint(currentPage, state, point)
-      const tremorCount = clamp(Math.round(uniform(2, profile.tremorCount + 1)), 2, 5)
-      await sequence(
-        Array.from({ length: tremorCount }, (_, index) => index),
-        async () => {
-          const tremorX = point.x + uniform(-profile.tremorAmplitude, profile.tremorAmplitude)
-          const tremorY = point.y + uniform(-profile.tremorAmplitude, profile.tremorAmplitude)
-          await currentPage.mouse.move(tremorX, tremorY)
-          await sleep(uniform(15, 45))
-        }
-      )
+      await performTremor(currentPage, point, profile)
       await currentPage.mouse.move(point.x, point.y)
-      const clickCount = count === 2 ? clickIndex + 1 : 1
-      await currentPage.mouse.down({ button: button || 'left', clickCount })
-      try {
-        await sleep(uniform(profile.clickHoldMin, profile.clickHoldMax))
-      } finally {
-        await currentPage.mouse.up({ button: button || 'left', clickCount })
-      }
-
+      const clickCount = doubleClickCount(count, clickIndex)
+      await pressAndRelease(currentPage, button || 'left', clickCount, profile)
       if (count === 2) {
         await sleep(uniform(60, 140))
       }

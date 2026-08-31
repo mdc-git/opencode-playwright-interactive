@@ -21,23 +21,46 @@ export class ReplRuntime {
     sweepStaleScratchDirs().catch(() => undefined)
   }
 
-  async execute(sessionID: SessionId, directory: WorkspaceDirectory, code: string) {
-    if (this.disposed) {
-      throw new Error('node_repl runtime is disposed')
+  private async disposeController(sessionID: SessionId, controller: ReplController) {
+    this.controllers.delete(sessionID)
+    await controller.dispose()
+  }
+
+  private async matchingController(sessionID: SessionId, directory: WorkspaceDirectory) {
+    const existing = this.controllers.get(sessionID)
+    if (!existing || existing.matchesDirectory(directory)) {
+      return existing
     }
 
-    let controller = this.controllers.get(sessionID)
-    if (controller && !controller.matchesDirectory(directory)) {
-      this.controllers.delete(sessionID)
-      await controller.dispose()
-      controller = undefined
-    }
+    await this.disposeController(sessionID, existing)
+    return undefined
+  }
 
+  private async controllerFor(sessionID: SessionId, directory: WorkspaceDirectory) {
+    let controller = await this.matchingController(sessionID, directory)
     if (!controller) {
       controller = new ReplController(sessionID, directory, this.options, this.scriptDirectory)
       this.controllers.set(sessionID, controller)
     }
 
+    return controller
+  }
+
+  private existingController(sessionID: SessionId) {
+    const controller = this.controllers.get(sessionID)
+    if (!controller) {
+      throw new Error('Node.js REPL kernel was not initialized.')
+    }
+
+    return controller
+  }
+
+  async execute(sessionID: SessionId, directory: WorkspaceDirectory, code: string) {
+    if (this.disposed) {
+      throw new Error('node_repl runtime is disposed')
+    }
+
+    const controller = await this.controllerFor(sessionID, directory)
     return controller.execute(code)
   }
 
@@ -46,30 +69,15 @@ export class ReplRuntime {
   }
 
   getJob(sessionID: SessionId, id: string): JobActionOutcome {
-    const controller = this.controllers.get(sessionID)
-    if (!controller) {
-      throw new Error('Node.js REPL kernel was not initialized.')
-    }
-
-    return { kind: 'job', job: controller.getJob(id) }
+    return { kind: 'job', job: this.existingController(sessionID).getJob(id) }
   }
 
   async waitForJob(sessionID: SessionId, id: string): Promise<JobActionOutcome> {
-    const controller = this.controllers.get(sessionID)
-    if (!controller) {
-      throw new Error('Node.js REPL kernel was not initialized.')
-    }
-
-    return { kind: 'job', job: await controller.waitForJob(id) }
+    return { kind: 'job', job: await this.existingController(sessionID).waitForJob(id) }
   }
 
   async cancelJob(sessionID: SessionId, id: string): Promise<JobActionOutcome> {
-    const controller = this.controllers.get(sessionID)
-    if (!controller) {
-      throw new Error('Node.js REPL kernel was not initialized.')
-    }
-
-    return { kind: 'job', job: await controller.cancelJob(id) }
+    return { kind: 'job', job: await this.existingController(sessionID).cancelJob(id) }
   }
 
   async reset(sessionID: SessionId) {
@@ -78,8 +86,7 @@ export class ReplRuntime {
       return false
     }
 
-    this.controllers.delete(sessionID)
-    await controller.dispose()
+    await this.disposeController(sessionID, controller)
     return true
   }
 

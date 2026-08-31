@@ -1,7 +1,8 @@
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
+import { withCacheLock } from './runtime-cache-lock.ts'
 import { boundedUtf8, doesExist, errorMessage, execFileAsync } from './runtime-process.ts'
 import type { RuntimeOptions } from './runtime-types.ts'
 
@@ -11,10 +12,6 @@ const PLAYWRIGHT_VERSION = '1.60.0'
 const CAMOUFOX_VERSION = '0.12.0'
 const CAMOUFOX_PACKAGE = 'camoufox-js'
 const CAMOUFOX_INSTALL_DIR_NAME = 'camoufox'
-const LOCK_STALE_MS = 15 * 60_000
-const LOCK_TIMEOUT_MS = 10 * 60_000
-const LOCK_POLL_MS = 250
-const LOCK_RENEW_MS = 30_000
 
 export function optionString(options: RuntimeOptions, key: keyof RuntimeOptions, fallback: string) {
   const value = options[key]
@@ -42,70 +39,6 @@ export function replCacheDirectory(options: RuntimeOptions) {
 
 export function playwrightBrowserDirectory(options: RuntimeOptions) {
   return join(playwrightCacheDirectory(options), 'browsers')
-}
-
-async function readHeartbeatAge(heartbeatPath: string, lockPath: string) {
-  try {
-    const info = await stat(heartbeatPath)
-    return Date.now() - info.mtimeMs
-  } catch {
-    return stat(lockPath)
-      .then((info) => Date.now() - info.mtimeMs)
-      .catch(() => LOCK_STALE_MS + 1)
-  }
-}
-
-async function waitForStaleLock(lockPath: string, heartbeatPath: string, start: number) {
-  if (Date.now() - start > LOCK_TIMEOUT_MS) {
-    throw new Error(
-      `Timed out waiting for the node_repl setup lock ${lockPath}; another process may be installing. Remove it manually if the holder is gone.`
-    )
-  }
-
-  const heartbeatAge = await readHeartbeatAge(heartbeatPath, lockPath)
-  if (heartbeatAge > LOCK_STALE_MS) {
-    await rm(lockPath, { recursive: true, force: true }).catch(() => undefined)
-  } else {
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, LOCK_POLL_MS)
-    })
-  }
-}
-
-async function acquireCacheLock(lockPath: string, heartbeatPath: string) {
-  const start = Date.now()
-  const attempt = async (): Promise<void> => {
-    try {
-      await mkdir(lockPath)
-      await writeFile(heartbeatPath, `${process.pid} ${Date.now()}\n`, 'utf8').catch(
-        () => undefined
-      )
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') {
-        throw error
-      }
-
-      await waitForStaleLock(lockPath, heartbeatPath, start)
-      await attempt()
-    }
-  }
-
-  await attempt()
-}
-
-async function withCacheLock<T>(target: string, operation: () => Promise<T>): Promise<T> {
-  const lockPath = `${target}.lock`
-  const heartbeatPath = `${lockPath}/heartbeat`
-  await acquireCacheLock(lockPath, heartbeatPath)
-  const heartbeat = setInterval(() => {
-    writeFile(heartbeatPath, `${process.pid} ${Date.now()}\n`, 'utf8').catch(() => undefined)
-  }, LOCK_RENEW_MS)
-  try {
-    return await operation()
-  } finally {
-    clearInterval(heartbeat)
-    await rm(lockPath, { recursive: true, force: true }).catch(() => undefined)
-  }
 }
 
 async function run(command: string, args: string[], environment: NodeJS.ProcessEnv) {
@@ -151,14 +84,18 @@ function chromiumMacExecutable(folder: string) {
   )
 }
 
+type BrowserRegistryEntry = { name?: string; revision?: string; browserRevision?: string }
+
+function chromiumEntryRevision(entry: BrowserRegistryEntry | undefined) {
+  return entry?.browserRevision ?? entry?.revision
+}
+
 async function readChromiumRevision(directory: string) {
   const registry = JSON.parse(
     await readFile(join(directory, 'node_modules', 'playwright-core', 'browsers.json'), 'utf8')
-  ) as {
-    browsers?: Array<{ name?: string; revision?: string; browserRevision?: string }>
-  }
+  ) as { browsers?: BrowserRegistryEntry[] }
   const chromium = registry.browsers?.find((browser) => browser?.name === 'chromium')
-  return chromium?.browserRevision ?? chromium?.revision
+  return chromiumEntryRevision(chromium)
 }
 
 async function isChromiumExecutablePresent(directory: string, browserDirectory: string) {
@@ -234,48 +171,53 @@ async function isPackageMatch(file: string, name: string, version: string) {
   }
 }
 
+async function isMarkerReady(marker: string, isForce: boolean, isReady: () => Promise<boolean>) {
+  return !isForce && (await doesExist(marker)) && (await isReady())
+}
+
+async function installAndMark(
+  config: InstallConfig,
+  spec: { marker: string; args: string[]; isReady: () => Promise<boolean>; missing: string }
+) {
+  const { options, environment } = config
+  await run(optionString(options, 'playwrightNpxPath', 'npx'), spec.args, environment)
+  if (!(await spec.isReady())) {
+    throw new Error(spec.missing)
+  }
+
+  await writeFile(spec.marker, '')
+}
+
 async function installChromium(config: InstallConfig, browserDirectory: string) {
-  const { options, directory, isForce, environment } = config
+  const { directory, isForce } = config
   const chromiumMarker = join(directory, `.chromium-${PLAYWRIGHT_VERSION}`)
-  const isMarkerReady =
-    !isForce &&
-    (await doesExist(chromiumMarker)) &&
-    (await isChromiumExecutablePresent(directory, browserDirectory))
-  if (isMarkerReady) {
+  const isChromiumReady = async () => isChromiumExecutablePresent(directory, browserDirectory)
+  if (await isMarkerReady(chromiumMarker, isForce, isChromiumReady)) {
     return
   }
 
-  await run(
-    optionString(options, 'playwrightNpxPath', 'npx'),
-    ['--prefix', directory, 'playwright', 'install', 'chromium'],
-    environment
-  )
-  if (!(await isChromiumExecutablePresent(directory, browserDirectory))) {
-    throw new Error(`Chromium executable is missing from ${browserDirectory} after installation`)
-  }
-
-  await writeFile(chromiumMarker, '')
+  await installAndMark(config, {
+    marker: chromiumMarker,
+    args: ['--prefix', directory, 'playwright', 'install', 'chromium'],
+    isReady: isChromiumReady,
+    missing: `Chromium executable is missing from ${browserDirectory} after installation`
+  })
 }
 
 async function installCamoufox(config: InstallConfig, camoufoxDirectory: string) {
-  const { options, directory, isForce, environment } = config
+  const { directory, isForce } = config
   const camoufoxMarker = join(directory, `.camoufox-${CAMOUFOX_VERSION}`)
-  const isMarkerReady =
-    !isForce && (await doesExist(camoufoxMarker)) && (await isCamoufoxReady(camoufoxDirectory))
-  if (isMarkerReady) {
+  const isCamoufoxInstalled = async () => isCamoufoxReady(camoufoxDirectory)
+  if (await isMarkerReady(camoufoxMarker, isForce, isCamoufoxInstalled)) {
     return
   }
 
-  await run(
-    optionString(options, 'playwrightNpxPath', 'npx'),
-    ['--prefix', directory, CAMOUFOX_PACKAGE, 'fetch'],
-    environment
-  )
-  if (!(await isCamoufoxReady(camoufoxDirectory))) {
-    throw new Error(`Camoufox is missing from ${camoufoxDirectory} after installation`)
-  }
-
-  await writeFile(camoufoxMarker, '')
+  await installAndMark(config, {
+    marker: camoufoxMarker,
+    args: ['--prefix', directory, CAMOUFOX_PACKAGE, 'fetch'],
+    isReady: isCamoufoxInstalled,
+    missing: `Camoufox is missing from ${camoufoxDirectory} after installation`
+  })
 }
 
 export async function setupPlaywright(options: RuntimeOptions, isForce = false) {

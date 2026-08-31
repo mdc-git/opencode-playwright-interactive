@@ -30,6 +30,7 @@ export default defineConfig([
         { pattern: 'plugins/node-repl/index.ts', category: 'entry' },
         { pattern: 'plugins/node-repl/runtime.ts', category: 'core' },
         { pattern: 'plugins/node-repl/runtime-cache.ts', category: 'core' },
+        { pattern: 'plugins/node-repl/runtime-cache-lock.ts', category: 'core' },
         { pattern: 'plugins/node-repl/runtime-controller.ts', category: 'core' },
         { pattern: 'plugins/node-repl/runtime-controller-core.ts', category: 'core' },
         { pattern: 'plugins/node-repl/runtime-job.ts', category: 'core' },
@@ -55,7 +56,7 @@ export default defineConfig([
     },
     rules: {
       // ESLint complexity metrics
-      complexity: ['error', 6],
+      complexity: ['error', 4],
       'max-depth': ['error', 3],
       'max-params': ['error', 4],
       'max-lines-per-function': ['error', 50],

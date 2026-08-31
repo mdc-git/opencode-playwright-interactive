@@ -1,11 +1,18 @@
-async function validateTarget(target, currentPage) {
+async function assertTargetPage(target, currentPage) {
   if (typeof target.page === 'function' && target.page() !== currentPage) {
     throw new Error('The target locator belongs to a different Playwright page')
   }
+}
 
+async function assertTargetEnabled(target) {
   if (typeof target.isEnabled === 'function' && !(await target.isEnabled())) {
     throw new Error('The target locator is disabled')
   }
+}
+
+async function validateTarget(target, currentPage) {
+  await assertTargetPage(target, currentPage)
+  await assertTargetEnabled(target)
 }
 
 function isLocatorTarget(target) {

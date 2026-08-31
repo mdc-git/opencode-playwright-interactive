@@ -51,12 +51,17 @@ function formatJobOutput(output: string) {
   return `Output:\n${output === '' ? '(no output)' : output}`
 }
 
-function formatJob(job: JobSnapshot) {
+function jobTimingLines(job: JobSnapshot) {
   const lines = [`Job: ${job.id}`, `State: ${job.state}`, `Started: ${job.startedAt}`]
   if (job.finishedAt !== undefined) {
     lines.push(`Finished: ${job.finishedAt}`)
   }
 
+  return lines
+}
+
+function jobDetailLines(job: JobSnapshot) {
+  const lines: string[] = []
   if (job.output !== undefined) {
     lines.push(formatJobOutput(job.output))
   }
@@ -73,7 +78,11 @@ function formatJob(job: JobSnapshot) {
     )
   }
 
-  return lines.join('\n')
+  return lines
+}
+
+function formatJob(job: JobSnapshot) {
+  return [...jobTimingLines(job), ...jobDetailLines(job)].join('\n')
 }
 
 function buildJobResult(job: JobSnapshot): Tool.Result {

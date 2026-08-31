@@ -111,20 +111,20 @@ const isWhitespace = (value) => /^\s$/v.test(value)
 const isPunctuationOrUppercase = (value) =>
   /[\p{Punctuation}\p{Symbol}]/v.test(value) || /[A-Z]/v.test(value)
 
+// Latency multipliers for remaining character pairs, evaluated in order; the
+// first matching rule wins and unmatched pairs type at 1x speed.
+const DIGRAPH_RULES = [
+  { factor: 0.92, matches: (previous, current) => previous === current },
+  {
+    factor: 1.08,
+    matches: (previous, current) => isWhitespace(previous) || isWhitespace(current)
+  },
+  { factor: 1.22, matches: (previous, current) => isPunctuationOrUppercase(current) }
+]
+
 function remainingDigraphFactor(previous, current) {
-  if (previous === current) {
-    return 0.92
-  }
-
-  if (isWhitespace(previous) || isWhitespace(current)) {
-    return 1.08
-  }
-
-  if (isPunctuationOrUppercase(current)) {
-    return 1.22
-  }
-
-  return 1
+  const rule = DIGRAPH_RULES.find(({ matches }) => matches(previous, current))
+  return rule?.factor ?? 1
 }
 
 export const digraphFactor = (previous, current) => {
