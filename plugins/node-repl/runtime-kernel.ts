@@ -3,7 +3,14 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline'
-import { boundedUtf8, doesExist, hasChildExited, terminateChild } from './runtime-process.ts'
+import { optionString } from './runtime-cache.ts'
+import {
+  boundedUtf8,
+  checkNode,
+  doesExist,
+  hasChildExited,
+  terminateChild
+} from './runtime-process.ts'
 import { gracefullyStopChild, startKernel } from './runtime-kernel-start.ts'
 import type {
   KernelMessage,
@@ -62,9 +69,12 @@ export class KernelController {
       return { child: this.child, wasRestarted: false }
     }
 
+    const node = optionString(this.config.options, 'nodePath', 'node')
+    await checkNode(node)
     const scratch = this.scratch ?? (await mkdtemp(join(tmpdir(), 'opencode-node-repl-')))
     this.scratch = scratch
     const child = await startKernel({
+      node,
       sessionId: this.config.sessionId,
       directory: this.config.directory,
       options: this.config.options,

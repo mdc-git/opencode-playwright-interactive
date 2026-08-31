@@ -4,19 +4,12 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { delimiter, join } from 'node:path'
 import process from 'node:process'
 import {
-  optionString,
   optionStrings,
   playwrightBrowserDirectory,
   playwrightCacheDirectory,
   replCacheDirectory
 } from './runtime-cache.ts'
-import {
-  checkNode,
-  errorMessage,
-  hasChildClosed,
-  hasChildExited,
-  ignoreFailure
-} from './runtime-process.ts'
+import { errorMessage, hasChildClosed, hasChildExited, ignoreFailure } from './runtime-process.ts'
 import type {
   KernelProcess,
   RuntimeOptions,
@@ -25,6 +18,7 @@ import type {
 } from './runtime-types.ts'
 
 type StartOptions = {
+  node: string
   sessionId: SessionId
   directory: WorkspaceDirectory
   options: RuntimeOptions
@@ -58,8 +52,6 @@ export async function gracefullyStopChild(child: KernelProcess) {
 }
 
 export async function startKernel(config: StartOptions) {
-  const node = optionString(config.options, 'nodePath', 'node')
-  await checkNode(node)
   const cacheDirectory = playwrightCacheDirectory(config.options)
   const kernelPath = join(config.scratch, 'kernel.cjs')
   await writeFile(kernelPath, await readFile(join(config.scriptDirectory, 'kernel.cjs'), 'utf8'))
@@ -71,7 +63,7 @@ export async function startKernel(config: StartOptions) {
   const nodePath = [...moduleDirs, ...(process.env.NODE_PATH?.split(delimiter) ?? [])]
     .filter(Boolean)
     .join(delimiter)
-  const child = spawn(node, ['--no-warnings', kernelPath], {
+  const child = spawn(config.node, ['--no-warnings', kernelPath], {
     cwd: config.directory,
     env: Object.fromEntries([
       ...Object.entries(process.env),
