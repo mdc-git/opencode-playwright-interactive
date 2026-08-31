@@ -1,9 +1,8 @@
 import { ReplController } from './runtime-controller.ts'
-import { setupPlaywright as setupPlaywrightCache } from './runtime-cache.ts'
+import { setupPlaywright } from './runtime-cache.ts'
 import { sweepStaleScratchDirs } from './runtime-process.ts'
 import type {
   ExecuteOutcome,
-  JobActionOutcome,
   RuntimeOptions,
   SessionId,
   WorkspaceDirectory
@@ -64,20 +63,20 @@ export class ReplRuntime {
     return controller.execute(code)
   }
 
-  listJobs(sessionID: SessionId): JobActionOutcome {
-    return { kind: 'list', jobs: this.controllers.get(sessionID)?.listJobs() ?? [] }
+  listJobs(sessionID: SessionId) {
+    return this.controllers.get(sessionID)?.listJobs() ?? []
   }
 
-  getJob(sessionID: SessionId, id: string): JobActionOutcome {
-    return { kind: 'job', job: this.existingController(sessionID).getJob(id) }
+  getJob(sessionID: SessionId, id: string) {
+    return this.existingController(sessionID).getJob(id)
   }
 
-  async waitForJob(sessionID: SessionId, id: string): Promise<JobActionOutcome> {
-    return { kind: 'job', job: await this.existingController(sessionID).waitForJob(id) }
+  async waitForJob(sessionID: SessionId, id: string) {
+    return this.existingController(sessionID).waitForJob(id)
   }
 
-  async cancelJob(sessionID: SessionId, id: string): Promise<JobActionOutcome> {
-    return { kind: 'job', job: await this.existingController(sessionID).cancelJob(id) }
+  async cancelJob(sessionID: SessionId, id: string) {
+    return this.existingController(sessionID).cancelJob(id)
   }
 
   async reset(sessionID: SessionId) {
@@ -104,6 +103,6 @@ export class ReplRuntime {
   }
 
   async setupPlaywright(isForce = false) {
-    return setupPlaywrightCache(this.options, isForce)
+    return setupPlaywright(this.options, isForce)
   }
 }

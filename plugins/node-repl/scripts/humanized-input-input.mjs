@@ -4,59 +4,40 @@ import {
   digraphFactor,
   logNormal,
   pointFor,
+  sequence,
   sleep,
   uniform
 } from './humanized-input-utils.mjs'
 
-function modifierList(modifiers) {
-  return Array.isArray(modifiers) ? modifiers : modifiers ? [modifiers] : []
+async function pressKey(currentPage, character, profile) {
+  try {
+    await currentPage.keyboard.press(character, {
+      delay: uniform(profile.keyHoldMin, profile.keyHoldMax)
+    })
+  } catch {
+    await currentPage.keyboard.insertText(character)
+  }
 }
 
-function sequence(items, operation) {
-  let chain = Promise.resolve()
-  for (const [index, item] of items.entries()) {
-    chain = chain.then(() => operation(item, index))
+async function typeCharacter(currentPage, character, previous, profile) {
+  if (/^[\p{Letter}\p{Number}\p{Punctuation}\p{Space_Separator}\p{Symbol}]$/v.test(character)) {
+    await pressKey(currentPage, character, profile)
+  } else {
+    await currentPage.keyboard.insertText(character)
   }
 
-  return chain
-}
-
-function createTypingHelpers(profile) {
-  const pressKey = async (
-    currentPage,
-    character,
-    holdMin = profile.keyHoldMin,
-    holdMax = profile.keyHoldMax
-  ) => {
-    try {
-      await currentPage.keyboard.press(character, { delay: uniform(holdMin, holdMax) })
-    } catch {
-      await currentPage.keyboard.insertText(character)
-    }
-  }
-
-  const typeCharacter = async (currentPage, character, previous) => {
-    if (/^[\p{Letter}\p{Number}\p{Punctuation}\p{Space_Separator}\p{Symbol}]$/v.test(character)) {
-      await pressKey(currentPage, character)
-    } else {
-      await currentPage.keyboard.insertText(character)
-    }
-
-    const base =
-      character === ' '
-        ? logNormal(120, 0.25)
-        : logNormal(profile.typingMean, profile.typingSigma) * digraphFactor(previous, character)
-    await sleep(Math.max(8, base))
-    return { previous: character }
-  }
-
-  return { pressKey, typeCharacter }
+  const base =
+    character === ' '
+      ? logNormal(120, 0.25)
+      : logNormal(profile.typingMean, profile.typingSigma) * digraphFactor(previous, character)
+  await sleep(Math.max(8, base))
 }
 
 async function withModifiers(currentPage, modifiers, action) {
   const pressed = []
   try {
-    await sequence(modifierList(modifiers), async (modifier) => {
+    const list = Array.isArray(modifiers) ? modifiers : modifiers ? [modifiers] : []
+    await sequence(list, async (modifier) => {
       await currentPage.keyboard.down(modifier)
       pressed.push(modifier)
     })
@@ -68,7 +49,7 @@ async function withModifiers(currentPage, modifiers, action) {
   }
 }
 
-async function typeText(currentPage, text, typeCharacter) {
+async function typeText(currentPage, text, profile) {
   if (typeof text !== 'string') {
     throw new TypeError('Humanized text input requires a string')
   }
@@ -80,8 +61,8 @@ async function typeText(currentPage, text, typeCharacter) {
   await sleep(logNormal(300, 0.3))
   let previous = ''
   await sequence([...text], async (character) => {
-    const result = await typeCharacter(currentPage, character, previous)
-    previous = result.previous
+    await typeCharacter(currentPage, character, previous, profile)
+    previous = character
   })
 }
 
@@ -103,10 +84,6 @@ async function performClick({ currentPage, state, target, options, profile, move
       moveToPoint
     })
   )
-}
-
-function doubleClickCount(count, clickIndex) {
-  return count === 2 ? clickIndex + 1 : 1
 }
 
 async function performTremor(currentPage, point, profile) {
@@ -138,7 +115,7 @@ function performClickGesture({ currentPage, state, point, button, count, profile
       await moveToPoint(currentPage, state, point)
       await performTremor(currentPage, point, profile)
       await currentPage.mouse.move(point.x, point.y)
-      const clickCount = doubleClickCount(count, clickIndex)
+      const clickCount = count === 2 ? clickIndex + 1 : 1
       await pressAndRelease(currentPage, button || 'left', clickCount, profile)
       if (count === 2) {
         await sleep(uniform(60, 140))
@@ -147,12 +124,9 @@ function performClickGesture({ currentPage, state, point, button, count, profile
   )
 }
 
-function createInputHelpers(profile, requirePage, moveToPoint) {
-  const { pressKey, typeCharacter } = createTypingHelpers(profile)
+function createInputHelpers(profile, moveToPoint) {
   return {
-    withModifiers,
-    pressKey,
-    typeText: (currentPage, text) => typeText(currentPage, text, typeCharacter),
+    typeText: (currentPage, text) => typeText(currentPage, text, profile),
     performClick: (currentPage, state, target, options) =>
       performClick({ currentPage, state, target, options, profile, moveToPoint })
   }

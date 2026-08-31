@@ -84,18 +84,12 @@ function chromiumMacExecutable(folder: string) {
   )
 }
 
-type BrowserRegistryEntry = { name?: string; revision?: string; browserRevision?: string }
-
-function chromiumEntryRevision(entry: BrowserRegistryEntry | undefined) {
-  return entry?.browserRevision ?? entry?.revision
-}
-
 async function readChromiumRevision(directory: string) {
   const registry = JSON.parse(
     await readFile(join(directory, 'node_modules', 'playwright-core', 'browsers.json'), 'utf8')
-  ) as { browsers?: BrowserRegistryEntry[] }
+  ) as { browsers?: Array<{ name?: string; revision?: string }> }
   const chromium = registry.browsers?.find((browser) => browser?.name === 'chromium')
-  return chromiumEntryRevision(chromium)
+  return chromium?.revision
 }
 
 async function isChromiumExecutablePresent(directory: string, browserDirectory: string) {

@@ -41,7 +41,7 @@ export function acquireRuntime(
 }
 
 export function releaseRuntime(runtimeId: string, holder: RuntimeHolder) {
-  holder.references = Math.max(0, holder.references - 1)
+  holder.references -= 1
   if (holder.references > 0 || holder.disposeTimer !== undefined) {
     return
   }

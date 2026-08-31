@@ -1,11 +1,9 @@
 import { KernelController } from './runtime-kernel.ts'
 import {
-  asExecutionError,
   clearCancelFallback,
   createReplJob,
   executionFailureError,
   executionResult,
-  markCancelledJob,
   MAX_RETAINED_TERMINAL_JOBS,
   setJobOutcome,
   snapshotError,
@@ -117,7 +115,11 @@ export class ReplControllerCore {
 
     try {
       const result = executionResult(message)
-      markCancelledJob(job, message)
+
+      if (message.status === 'cancelled') {
+        job.kernelState = 'preserved'
+      }
+
       this.finishJob(job, message.status, result)
     } catch (error) {
       job.kernelState = 'terminated'
@@ -226,8 +228,9 @@ export class ReplControllerCore {
     this.jobs.set(job.id, job)
     this.activeJob = job
     void this.runJob(code, job).catch((error: unknown) => {
-      this.finishJob(job, 'failed', asExecutionError(error))
+      this.finishJob(job, 'failed', error instanceof Error ? error : new Error(String(error)))
     })
+
     return job
   }
 

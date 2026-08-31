@@ -3,6 +3,8 @@ import type { Attachment, ExecuteOutcome, JobSnapshot } from './runtime-types.ts
 
 type ToolAttachment = Pick<Attachment, 'url' | 'mime' | 'filename'>
 
+const metadataKey = <const K extends string>(key: K): K => key
+
 function buildResult(result: {
   output: string
   attachments: readonly ToolAttachment[]
@@ -96,14 +98,6 @@ function buildJobResult(job: JobSnapshot): Tool.Result {
   })
 }
 
-function formatJobList(jobs: JobSnapshot[]) {
-  return jobs.length === 0
-    ? 'No Node.js REPL jobs.'
-    : jobs.map((job) => formatJob(job)).join('\n\n')
-}
-
-const metadataKey = <const K extends string>(key: K): K => key
-
 export function formatJobActionResult(job: JobSnapshot): Tool.Result {
   return {
     ...buildJobResult(job),
@@ -112,7 +106,8 @@ export function formatJobActionResult(job: JobSnapshot): Tool.Result {
 }
 
 export function formatJobListResult(jobs: JobSnapshot[]): Tool.Result {
-  const output = formatJobList(jobs)
+  const output =
+    jobs.length === 0 ? 'No Node.js REPL jobs.' : jobs.map((job) => formatJob(job)).join('\n\n')
   return { output, content: output }
 }
 

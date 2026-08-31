@@ -18,6 +18,7 @@ import {
   type ResetInput,
   type SetupInput
 } from './tool-schema.ts'
+import { errorMessage } from './runtime-process.ts'
 import type { ReplRuntime } from './runtime.ts'
 
 type SessionGetter = Plugin.Context['session']['get']
@@ -25,9 +26,7 @@ type SessionGetter = Plugin.Context['session']['get']
 const key = <const K extends string>(value: K): K => value
 
 const asToolError = (error: unknown) =>
-  error instanceof ToolError
-    ? error
-    : new ToolError({ message: error instanceof Error ? error.message : String(error), error })
+  error instanceof ToolError ? error : new ToolError({ message: errorMessage(error), error })
 
 const attempt = <T>(run: () => Promise<T>) =>
   Effect.tryPromise({
@@ -70,15 +69,11 @@ const makeJobExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext: 
     yield* toolContext.progress({ title: 'Node.js REPL job' })
     const args = input as JobInput
     if (args.action === 'list') {
-      const result = yield* Effect.try({
+      const jobs = yield* Effect.try({
         try: () => runtime.listJobs(toolContext.sessionID),
         catch: asToolError
       })
-      if (result.kind !== 'list') {
-        throw new Error('Unexpected Node.js REPL job result')
-      }
-
-      return formatJobListResult(result.jobs)
+      return formatJobListResult(jobs)
     }
 
     const run = async () => {
@@ -94,11 +89,7 @@ const makeJobExecutor = (runtime: ReplRuntime) => (input: unknown, toolContext: 
     }
 
     const result = yield* attempt(run)
-    if (result.kind !== 'job') {
-      throw new Error('Unexpected Node.js REPL job result')
-    }
-
-    return formatJobActionResult(result.job)
+    return formatJobActionResult(result)
   })
 
 const makeResetExecutor = (runtime: ReplRuntime) => (_input: unknown, toolContext: Tool.Context) =>

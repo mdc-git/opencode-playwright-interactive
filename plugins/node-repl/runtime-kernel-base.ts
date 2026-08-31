@@ -68,7 +68,7 @@ export abstract class KernelControllerBase {
     this.callbacks = callbacks
   }
 
-  private async prepareKernel(node: string) {
+  private async prepareKernel() {
     this.scratch ??= await mkdtemp(join(tmpdir(), 'opencode-node-repl-'))
     const { scratch } = this
     const source = await readFile(join(this.scriptDirectory, 'kernel.cjs'), 'utf8')
@@ -76,7 +76,7 @@ export abstract class KernelControllerBase {
     await writeFile(kernelPath, source)
     this.stderrTail = []
     this.stderrFragment = ''
-    return { node, kernelPath, scratch }
+    return { kernelPath, scratch }
   }
 
   private buildSpawnOptions(): SpawnOptions {
@@ -137,7 +137,7 @@ export abstract class KernelControllerBase {
 
     const node = optionString(this.options, 'nodePath', 'node')
     await checkNode(node)
-    const { kernelPath, scratch } = await this.prepareKernel(node)
+    const { kernelPath, scratch } = await this.prepareKernel()
     const wasRestarted = this.kernelGeneration > 0
     const child = spawn(
       node,

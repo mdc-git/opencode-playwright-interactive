@@ -1,75 +1,25 @@
-// Pure helpers for humanized input: no browser, profile or session state.
-// Behavior math (pointer paths, timing, typing latency) lives here so the
-// stateful runtime can stay focused on lifecycle and Playwright orchestration.
-
-export const PERSONA_SCHEMA = 2
-export const MOBILE_VIEWPORT = Object.freeze({ width: 390, height: 844 })
-export const MOBILE_DEVICE_SCALE_FACTOR = 3
-// Used only when neither the page's viewportSize() nor an in-page evaluation
-// can produce dimensions (for example during an early navigation).
 export const FALLBACK_VIEWPORT = Object.freeze({ width: 960, height: 540 })
-export const IDENTITY_CONTEXT_OPTIONS = Object.freeze([
-  'userAgent',
-  'locale',
-  'timezoneId',
-  'isMobile',
-  'hasTouch',
-  'deviceScaleFactor',
-  'viewport',
-  'screen'
-])
-export const IDENTITY_ARGUMENTS = Object.freeze([
-  '--disable-blink-features=AutomationControlled',
-  '--force-device-scale-factor',
-  '--lang',
-  '--user-agent'
-])
-export const IDENTITY_HEADERS = Object.freeze([
-  'accept-language',
-  'sec-ch-ua',
-  'sec-ch-ua-mobile',
-  'sec-ch-ua-platform',
-  'user-agent'
-])
-export const STEALTH_ARGUMENTS = Object.freeze([
-  '--disable-blink-features=AutomationControlled',
-  '--disable-features=AutomationControlled,IsolateOrigins,site-per-process',
-  '--no-first-run',
-  '--no-default-browser-check'
-])
-export const STRUCTURAL_ROLES = Object.freeze([
-  'search',
-  'main',
-  'navigation',
-  'banner',
-  'contentinfo',
-  'complementary',
-  'region',
-  'form',
-  'heading',
-  'list',
-  'listitem',
-  'presentation',
-  'none'
-])
-export const BEHAVIOR_SCHEMA = 2
 
 export const sleep = (milliseconds) =>
   new Promise((resolve) => {
     setTimeout(resolve, milliseconds)
   })
-export const settleWithin = (promise, milliseconds, fallback) =>
-  Promise.race([
-    Promise.resolve(promise).catch(() => fallback),
-    sleep(milliseconds).then(() => fallback)
-  ])
+export function sequence(items, operation) {
+  let chain = Promise.resolve()
+  for (const [index, item] of items.entries()) {
+    chain = chain.then(() => operation(item, index))
+  }
+
+  return chain
+}
+
 export const uniform = (minimum, maximum) => {
   const spread = maximum - minimum
   const offset = Math.random() * spread
   return minimum + offset
 }
 
-export const normal = () => {
+const normal = () => {
   let first = 0
   let second = 0
   while (!first) {
@@ -123,8 +73,7 @@ const DIGRAPH_RULES = [
 ]
 
 function remainingDigraphFactor(previous, current) {
-  const rule = DIGRAPH_RULES.find(({ matches }) => matches(previous, current))
-  return rule?.factor ?? 1
+  return DIGRAPH_RULES.find(({ matches }) => matches(previous, current))?.factor ?? 1
 }
 
 export const digraphFactor = (previous, current) => {

@@ -3,19 +3,11 @@ import {
   fittsDuration,
   pathBetween,
   pointFor,
+  sequence,
   sleep,
   uniform
 } from './humanized-input-utils.mjs'
 import { targetBox } from './humanized-input-target.mjs'
-
-function sequence(items, operation) {
-  let chain = Promise.resolve()
-  for (const [index, item] of items.entries()) {
-    chain = chain.then(() => operation(item, index))
-  }
-
-  return chain
-}
 
 function computeEasing(duration, index, total, elapsed) {
   const t = (index + 2) / total
@@ -72,4 +64,3 @@ function createMoveHelpers(profile, viewport, requirePage) {
 }
 
 export { createMoveHelpers, pageViewport }
-export { createInputHelpers } from './humanized-input-input.mjs'

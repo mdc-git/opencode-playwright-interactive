@@ -30,35 +30,19 @@ export function createReplJob(id: string): ReplJob {
 }
 
 export function snapshotFinishedAt(job: ReplJob) {
-  if (job.finishedAt === undefined) {
-    return {}
-  }
-
-  return { finishedAt: new Date(job.finishedAt).toISOString() }
+  return job.finishedAt === undefined ? {} : { finishedAt: new Date(job.finishedAt).toISOString() }
 }
 
 export function snapshotResult(job: ReplJob, shouldIncludeResult: boolean) {
-  if (!shouldIncludeResult) {
-    return {}
-  }
-
-  if (!['completed', 'cancelled'].includes(job.state)) {
-    return {}
-  }
-
-  if (!job.result) {
-    return {}
-  }
-
-  return { output: job.result.output, attachments: job.result.attachments }
+  return shouldIncludeResult &&
+    ['completed', 'cancelled'].includes(job.state) &&
+    job.result !== undefined
+    ? { output: job.result.output, attachments: job.result.attachments }
+    : {}
 }
 
 export function snapshotError(job: ReplJob) {
-  if (job.state !== 'failed' || !job.error) {
-    return {}
-  }
-
-  return { error: job.error.message }
+  return job.state === 'failed' && job.error ? { error: job.error.message } : {}
 }
 
 export function setJobOutcome(
@@ -75,11 +59,7 @@ export function setJobOutcome(
 }
 
 function setJobResult(job: ReplJob, value?: Result | Error) {
-  if (value instanceof Error) {
-    return
-  }
-
-  if (value) {
+  if (value && !(value instanceof Error)) {
     job.result = value
   }
 }
@@ -93,23 +73,10 @@ export function clearCancelFallback(job: ReplJob) {
   job.cancelFallback = undefined
 }
 
-export function asExecutionError(error: unknown) {
-  return error instanceof Error ? error : new Error(String(error))
-}
-
 export function executionResult(message: Extract<KernelMessage, { type: 'exec_result' }>): Result {
   return {
     output: typeof message.output === 'string' ? message.output : '',
     attachments: message.status === 'cancelled' ? [] : attachments(message.attachments)
-  }
-}
-
-export function markCancelledJob(
-  job: ReplJob,
-  message: Extract<KernelMessage, { type: 'exec_result' }>
-) {
-  if (message.status === 'cancelled') {
-    job.kernelState = 'preserved'
   }
 }
 

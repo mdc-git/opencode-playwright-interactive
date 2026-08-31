@@ -1,4 +1,5 @@
-import { createInputHelpers, createMoveHelpers, pageViewport } from './humanized-input-actions.mjs'
+import { createMoveHelpers, pageViewport } from './humanized-input-actions.mjs'
+import { createInputHelpers } from './humanized-input-input.mjs'
 import { clamp, sleep, uniform } from './humanized-input-utils.mjs'
 
 const DEFAULT_PROFILE = Object.freeze({
@@ -187,7 +188,7 @@ export function createHumanizedInput({ profile: profileOverrides = {} } = {}) {
   const queue = createActionQueue()
 
   const { moveToPoint, moveToTarget } = createMoveHelpers(profile, pageViewport, requirePage)
-  const { typeText, performClick } = createInputHelpers(profile, requirePage, moveToPoint)
+  const { typeText, performClick } = createInputHelpers(profile, moveToPoint)
   const deps = { queue, moveToTarget, performClick, typeText, profile }
 
   return Object.freeze({

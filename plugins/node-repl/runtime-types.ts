@@ -34,8 +34,6 @@ export type ExecuteOutcome =
   | { kind: 'completed'; result: Result; kernelRestarted?: boolean }
   | { kind: 'background'; job: JobSnapshot }
   | { kind: 'busy'; job: JobSnapshot }
-export type JobActionOutcome =
-  { kind: 'list'; jobs: JobSnapshot[] } | { kind: 'job'; job: JobSnapshot }
 
 export type KernelProcess = ChildProcessWithoutNullStreams & {
   stdio: [
