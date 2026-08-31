@@ -15,6 +15,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "test": "node --test test/local-plugin.test.mjs",
     "typecheck": "tsc --noEmit",
     "check:deps": "depcruise --config .dependency-cruiser.mjs plugins",
     "check:knip": "knip"
