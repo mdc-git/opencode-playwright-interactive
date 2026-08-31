@@ -49,7 +49,6 @@ async function readHeartbeatAge(heartbeatPath: string, lockPath: string) {
     const info = await stat(heartbeatPath)
     return Date.now() - info.mtimeMs
   } catch {
-    // No heartbeat yet; fall back to the lock directory's own age.
     return stat(lockPath)
       .then((info) => Date.now() - info.mtimeMs)
       .catch(() => LOCK_STALE_MS + 1)
@@ -94,9 +93,6 @@ async function acquireCacheLock(lockPath: string, heartbeatPath: string) {
   await attempt()
 }
 
-// Cross-process mutex for the shared user cache. Multiple OpenCode services
-// (or concurrent sessions) may run setup at the same time; npm installs,
-// source patching and browser downloads must not interleave.
 async function withCacheLock<T>(target: string, operation: () => Promise<T>): Promise<T> {
   const lockPath = `${target}.lock`
   const heartbeatPath = `${lockPath}/heartbeat`
@@ -133,15 +129,7 @@ async function run(command: string, args: string[], environment: NodeJS.ProcessE
 function chromiumExecutableRelative(revision: string) {
   const folder = `chromium-${revision}`
   if (process.platform === 'darwin') {
-    const sub = process.arch === 'arm64' ? 'chrome-mac-arm64' : 'chrome-mac-x64'
-    return join(
-      folder,
-      sub,
-      'Google Chrome for Testing.app',
-      'Contents',
-      'MacOS',
-      'Google Chrome for Testing'
-    )
+    return chromiumMacExecutable(folder)
   }
 
   if (process.platform === 'win32') {
@@ -151,15 +139,31 @@ function chromiumExecutableRelative(revision: string) {
   return join(folder, process.arch === 'arm64' ? 'chrome-linux' : 'chrome-linux64', 'chrome')
 }
 
+function chromiumMacExecutable(folder: string) {
+  const sub = process.arch === 'arm64' ? 'chrome-mac-arm64' : 'chrome-mac-x64'
+  return join(
+    folder,
+    sub,
+    'Google Chrome for Testing.app',
+    'Contents',
+    'MacOS',
+    'Google Chrome for Testing'
+  )
+}
+
+async function readChromiumRevision(directory: string) {
+  const registry = JSON.parse(
+    await readFile(join(directory, 'node_modules', 'playwright-core', 'browsers.json'), 'utf8')
+  ) as {
+    browsers?: Array<{ name?: string; revision?: string; browserRevision?: string }>
+  }
+  const chromium = registry.browsers?.find((browser) => browser?.name === 'chromium')
+  return chromium?.browserRevision ?? chromium?.revision
+}
+
 async function isChromiumExecutablePresent(directory: string, browserDirectory: string) {
   try {
-    const registry = JSON.parse(
-      await readFile(join(directory, 'node_modules', 'playwright-core', 'browsers.json'), 'utf8')
-    ) as {
-      browsers?: Array<{ name?: string; revision?: string; browserRevision?: string }>
-    }
-    const chromium = registry.browsers?.find((browser) => browser?.name === 'chromium')
-    const revision = chromium?.browserRevision ?? chromium?.revision
+    const revision = await readChromiumRevision(directory)
     if (revision === undefined) {
       return false
     }
@@ -181,17 +185,22 @@ type InstallConfig = {
   environment: NodeJS.ProcessEnv
 }
 
-async function installPackages(config: InstallConfig) {
-  const { options, directory, isForce, environment } = config
+async function arePackagesReady(directory: string) {
   const playwrightPackage = join(directory, 'node_modules', 'playwright', 'package.json')
   const playwrightCorePackage = join(directory, 'node_modules', 'playwright-core', 'package.json')
   const camoufoxPackage = join(directory, 'node_modules', CAMOUFOX_PACKAGE, 'package.json')
-  const chromiumMarker = join(directory, `.chromium-${PLAYWRIGHT_VERSION}`)
-  const camoufoxMarker = join(directory, `.camoufox-${CAMOUFOX_VERSION}`)
-  const isPackageReady =
+  return (
     (await isPackageMatch(playwrightPackage, 'playwright', PLAYWRIGHT_VERSION)) &&
     (await isPackageMatch(playwrightCorePackage, 'playwright-core', PLAYWRIGHT_VERSION)) &&
     (await isPackageMatch(camoufoxPackage, CAMOUFOX_PACKAGE, CAMOUFOX_VERSION))
+  )
+}
+
+async function installPackages(config: InstallConfig) {
+  const { options, directory, isForce, environment } = config
+  const chromiumMarker = join(directory, `.chromium-${PLAYWRIGHT_VERSION}`)
+  const camoufoxMarker = join(directory, `.camoufox-${CAMOUFOX_VERSION}`)
+  const isPackageReady = await arePackagesReady(directory)
   if (isForce || !isPackageReady) {
     await run(
       optionString(options, 'playwrightNpmPath', 'npm'),
@@ -208,10 +217,7 @@ async function installPackages(config: InstallConfig) {
     await rm(camoufoxMarker, { force: true })
   }
 
-  const isAllReady =
-    (await isPackageMatch(playwrightPackage, 'playwright', PLAYWRIGHT_VERSION)) &&
-    (await isPackageMatch(playwrightCorePackage, 'playwright-core', PLAYWRIGHT_VERSION)) &&
-    (await isPackageMatch(camoufoxPackage, CAMOUFOX_PACKAGE, CAMOUFOX_VERSION))
+  const isAllReady = await arePackagesReady(directory)
   if (!isAllReady) {
     throw new Error(
       `Playwright setup did not install playwright ${PLAYWRIGHT_VERSION} and ${CAMOUFOX_PACKAGE} ${CAMOUFOX_VERSION}`

@@ -63,14 +63,23 @@ function parseVersion(value: string) {
   return [Number(major), Number(minor), Number(patch)] as const
 }
 
+function compareVersionPart(actual: number, minimum: number) {
+  if (actual > minimum) {
+    return 1
+  }
+
+  if (actual < minimum) {
+    return -1
+  }
+
+  return 0
+}
+
 function versionGreaterThan(actual: readonly number[], minimum: readonly number[]) {
   for (const [index, element] of minimum.entries()) {
-    if (actual[index] > element) {
-      return true
-    }
-
-    if (actual[index] < element) {
-      return false
+    const comparison = compareVersionPart(actual[index], element)
+    if (comparison !== 0) {
+      return comparison > 0
     }
   }
 
@@ -210,6 +219,40 @@ async function sweepOwnerlessDir(directory: string) {
   }
 }
 
+async function sweepScratchDirectory(directory: string, removed: string[]) {
+  const isHandled = await didSweepOwnedDir(directory, removed)
+  if (!isHandled) {
+    await sweepOwnerlessDir(directory)
+  }
+}
+
+async function sweepScratchEntry(entry: string, removed: string[]) {
+  if (!entry.startsWith(SCRATCH_PREFIX)) {
+    return
+  }
+
+  const directory = join(tmpdir(), entry)
+  try {
+    const info = await stat(directory)
+    if (!info.isDirectory()) {
+      return
+    }
+
+    await sweepScratchDirectory(directory, removed)
+  } catch {
+    // Entry vanished or is unreadable; nothing to sweep.
+  }
+}
+
+async function sweepScratchEntries(entries: string[], removed: string[]) {
+  let chain = Promise.resolve()
+  for (const entry of entries) {
+    chain = chain.then(async () => sweepScratchEntry(entry, removed))
+  }
+
+  return chain
+}
+
 export async function sweepStaleScratchDirs() {
   if (isStaleSweepStarted) {
     return
@@ -224,37 +267,7 @@ export async function sweepStaleScratchDirs() {
   }
 
   const removed: string[] = []
-  const sweepEntry = async (index: number): Promise<void> => {
-    if (index >= entries.length) {
-      return
-    }
-
-    const entry = entries[index]
-    if (!entry.startsWith(SCRATCH_PREFIX)) {
-      await sweepEntry(index + 1)
-      return
-    }
-
-    const directory = join(tmpdir(), entry)
-    try {
-      const info = await stat(directory)
-      if (!info.isDirectory()) {
-        await sweepEntry(index + 1)
-        return
-      }
-
-      const isHandled = await didSweepOwnedDir(directory, removed)
-      if (!isHandled) {
-        await sweepOwnerlessDir(directory)
-      }
-    } catch {
-      // Entry vanished or is unreadable; nothing to sweep.
-    }
-
-    await sweepEntry(index + 1)
-  }
-
-  await sweepEntry(0)
+  await sweepScratchEntries(entries, removed)
 
   if (removed.length === 0) {
     return

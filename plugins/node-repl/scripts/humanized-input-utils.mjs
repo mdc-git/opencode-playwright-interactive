@@ -106,6 +106,27 @@ export const fittsDuration = (distance, targetSize, profile) => {
 // carry a planning cost. Returns a latency multiplier for a character pair.
 const BIGRAM_EASE =
   /^(?:th|he|in|er|an|re|on|at|en|nd|ti|es|or|te|of|ed|is|it|al|ar|st|to|nt|ng|se|ha|as|ou|io|le|ve|co|me|de|hi|ri|ro|ic|ne|ea|ra|ce|li|ch|ll|be|ma|si|om|ur)$/v
+
+const isWhitespace = (value) => /^\s$/v.test(value)
+const isPunctuationOrUppercase = (value) =>
+  /[\p{Punctuation}\p{Symbol}]/v.test(value) || /[A-Z]/v.test(value)
+
+function remainingDigraphFactor(previous, current) {
+  if (previous === current) {
+    return 0.92
+  }
+
+  if (isWhitespace(previous) || isWhitespace(current)) {
+    return 1.08
+  }
+
+  if (isPunctuationOrUppercase(current)) {
+    return 1.22
+  }
+
+  return 1
+}
+
 export const digraphFactor = (previous, current) => {
   if (!previous) {
     return 1.35
@@ -116,19 +137,7 @@ export const digraphFactor = (previous, current) => {
     return 0.82
   }
 
-  if (previous === current) {
-    return 0.92
-  }
-
-  if (/^\s$/v.test(previous) || /^\s$/v.test(current)) {
-    return 1.08
-  }
-
-  if (/[\p{Punctuation}\p{Symbol}]/v.test(current) || /[A-Z]/v.test(current)) {
-    return 1.22
-  }
-
-  return 1
+  return remainingDigraphFactor(previous, current)
 }
 
 export const pathBetween = (from, to, profile) => {
@@ -169,18 +178,25 @@ export const pathBetween = (from, to, profile) => {
     points.push({ x: term1x + term2x + term3x + term4x, y: term1y + term2y + term3y + term4y })
   }
 
-  if (distance > 40 && Math.random() < profile.overshootChance) {
-    const amount = uniform(profile.overshootMin, profile.overshootMax)
-    const overshootRatioX = dx / distance
-    const overshootRatioY = dy / distance
-    const offsetX = overshootRatioX * amount
-    const offsetY = overshootRatioY * amount
-    const overshoot = { x: to.x + offsetX, y: to.y + offsetY }
-    const landing = points.pop()
-    points.push(overshoot, landing)
-  }
+  addOvershoot({ points, dx, dy, distance, to, profile })
 
   return points
+}
+
+function addOvershoot({ points, dx, dy, distance, to, profile }) {
+  if (distance <= 40 || Math.random() >= profile.overshootChance) {
+    return
+  }
+
+  const amount = uniform(profile.overshootMin, profile.overshootMax)
+  const offsetX = (dx / distance) * amount
+  const offsetY = (dy / distance) * amount
+  const overshoot = {
+    x: to.x + offsetX,
+    y: to.y + offsetY
+  }
+  const landing = points.pop()
+  points.push(overshoot, landing)
 }
 
 const clickCoordinate = (size, origin, precision) => {

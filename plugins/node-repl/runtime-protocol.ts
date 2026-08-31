@@ -43,13 +43,27 @@ function assertValidAttachmentFilename(filename: unknown) {
   }
 }
 
-function validateAttachmentPayload(url: string, mime: string) {
+function validImageData(url: string, mime: string) {
   const match = /^data:(?<mime>[^,;]+);base64,(?<data>[\s\S]+)$/iv.exec(url)
-  if (!match || match.groups?.mime?.toLowerCase() !== mime) {
+  if (!match) {
     throw new Error('node_repl kernel sent an invalid image data URL')
   }
 
-  const size = decodedBase64Size(match.groups?.data ?? '')
+  const { groups } = match
+  if (!groups) {
+    throw new Error('node_repl kernel sent an invalid image data URL')
+  }
+
+  const { mime: actualMime } = groups
+  if (actualMime?.toLowerCase() !== mime) {
+    throw new Error('node_repl kernel sent an invalid image data URL')
+  }
+
+  return groups.data ?? ''
+}
+
+function validateAttachmentPayload(url: string, mime: string) {
+  const size = decodedBase64Size(validImageData(url, mime))
   if (size === 0 || size > MAX_IMAGE_BYTES) {
     throw new Error('node_repl kernel sent an image outside the allowed size range')
   }

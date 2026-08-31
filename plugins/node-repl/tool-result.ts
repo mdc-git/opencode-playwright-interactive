@@ -26,6 +26,31 @@ function buildResult(result: {
   }
 }
 
+const KERNEL_STATE_LINES = {
+  preserved: [
+    'Kernel: preserved. Cancellation is not rollback; bindings and external side effects may be partial.'
+  ],
+  terminated: [
+    'Kernel: terminated. All REPL bindings and in-process browser/Appium handles were lost; external sessions may require separate cleanup.'
+  ]
+} satisfies Record<NonNullable<JobSnapshot['kernelState']>, string[]>
+
+function formatKernelState(job: JobSnapshot) {
+  if (job.kernelState !== undefined) {
+    return KERNEL_STATE_LINES[job.kernelState]
+  }
+
+  if (job.state === 'cancelling') {
+    return ['Kernel state: cancellation is still in progress; wait before submitting another cell.']
+  }
+
+  return []
+}
+
+function formatJobOutput(output: string) {
+  return `Output:\n${output === '' ? '(no output)' : output}`
+}
+
 function formatJob(job: JobSnapshot) {
   const lines = [`Job: ${job.id}`, `State: ${job.state}`, `Started: ${job.startedAt}`]
   if (job.finishedAt !== undefined) {
@@ -33,26 +58,14 @@ function formatJob(job: JobSnapshot) {
   }
 
   if (job.output !== undefined) {
-    lines.push(`Output:\n${job.output === '' ? '(no output)' : job.output}`)
+    lines.push(formatJobOutput(job.output))
   }
 
   if (job.error !== undefined) {
     lines.push(`Error: ${job.error}`)
   }
 
-  if (job.kernelState === 'preserved') {
-    lines.push(
-      'Kernel: preserved. Cancellation is not rollback; bindings and external side effects may be partial.'
-    )
-  } else if (job.kernelState === 'terminated') {
-    lines.push(
-      'Kernel: terminated. All REPL bindings and in-process browser/Appium handles were lost; external sessions may require separate cleanup.'
-    )
-  } else if (job.state === 'cancelling') {
-    lines.push(
-      'Kernel state: cancellation is still in progress; wait before submitting another cell.'
-    )
-  }
+  lines.push(...formatKernelState(job))
 
   if (job.kernelRestarted) {
     lines.push(
