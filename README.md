@@ -127,9 +127,11 @@ other declared dependencies into an isolated cache, and loads the plugin. See
 
 This repository includes a tracked local V2 harness in `.opencode/`. It removes
 the globally configured `github.node_repl` plugin by its exported ID and loads
-`./local-node-repl.ts` instead. That wrapper assigns the local instance the
+the `.opencode/` directory as a local plugin. Its `index.ts` entrypoint
+delegates to `local-node-repl.ts`, whose wrapper assigns the local instance the
 `local.node_repl` ID, preventing a duplicate plugin registration while the
-working tree is used as the source.
+working tree is used as the source. V2 configured local plugins must be
+directories with an `index.ts` or `index.js` entrypoint.
 
 Run the private server and TUI from the repository root:
 

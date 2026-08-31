@@ -4,5 +4,6 @@ node_modules/
 .opencode/*
 !.opencode/opencode.jsonc
 !.opencode/local-node-repl.ts
+!.opencode/index.ts
 !.opencode/commands/
 !.opencode/commands/deploy.md
