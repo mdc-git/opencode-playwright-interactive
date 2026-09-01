@@ -220,6 +220,16 @@ function startServer(project, root) {
   return { server, diagnostics }
 }
 
+async function assertPluginRegistrations(base, directory, diagnostics) {
+  const location = encodeURIComponent(directory)
+  const [{ data: commands }, { data: skills }] = await Promise.all([
+    api(base, `/api/command?location%5Bdirectory%5D=${location}`, diagnostics),
+    api(base, `/api/skill?location%5Bdirectory%5D=${location}`, diagnostics)
+  ])
+  assert.ok(commands.some(({ name }) => name === 'playwright'))
+  assert.ok(skills.some(({ id }) => id === 'playwright-interactive'))
+}
+
 test('loads the local plugin in a standalone session from a temp project', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-playwright-interactive-'))
   let server
@@ -256,6 +266,8 @@ test('loads the local plugin in a standalone session from a temp project', async
     assert.equal(plugin.state.status, 'active')
     assert.equal(plugin.source.type, 'local')
     assert.equal(plugin.source.path, path.join(pluginDirectory, 'index.ts'))
+
+    await assertPluginRegistrations(base, project, started.diagnostics)
   } finally {
     try {
       if (server) {
