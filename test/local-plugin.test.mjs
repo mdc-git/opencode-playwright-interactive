@@ -221,13 +221,34 @@ function startServer(project, root) {
 }
 
 async function assertPluginRegistrations(base, directory, diagnostics) {
-  const location = encodeURIComponent(directory)
-  const [{ data: commands }, { data: skills }] = await Promise.all([
-    api(base, `/api/command?location%5Bdirectory%5D=${location}`, diagnostics),
-    api(base, `/api/skill?location%5Bdirectory%5D=${location}`, diagnostics)
-  ])
-  assert.ok(commands.some(({ name }) => name === 'playwright'))
-  assert.ok(skills.some(({ id }) => id === 'playwright-interactive'))
+  return new Promise((resolve, reject) => {
+    const poll = async () => {
+      try {
+        const location = encodeURIComponent(directory)
+        const [{ data: commands }, { data: skills }] = await Promise.all([
+          api(base, `/api/command?location%5Bdirectory%5D=${location}`, diagnostics),
+          api(base, `/api/skill?location%5Bdirectory%5D=${location}`, diagnostics)
+        ])
+        if (
+          commands.some(({ name }) => name === 'playwright') &&
+          skills.some(({ id }) => id === 'playwright-interactive')
+        ) {
+          clearInterval(timer)
+          clearTimeout(timeout)
+          resolve()
+        }
+      } catch {}
+    }
+
+    const timer = setInterval(poll, 100)
+    const timeout = setTimeout(() => {
+      clearInterval(timer)
+      reject(
+        new Error(withServerDiagnostics('Timed out waiting for plugin registrations', diagnostics))
+      )
+    }, 10_000)
+    poll()
+  })
 }
 
 test('loads the local plugin in a standalone session from a temp project', async () => {
@@ -236,10 +257,7 @@ test('loads the local plugin in a standalone session from a temp project', async
 
   try {
     const relative = path.relative(repository, root)
-    assert.ok(
-      relative.startsWith('..') || path.isAbsolute(relative),
-      'Temporary project must be outside the repository'
-    )
+    assert.ok(relative.startsWith('..') || path.isAbsolute(relative))
 
     const project = path.join(root, 'project')
     const pluginDirectory = path.join(repository, '.opencode')
