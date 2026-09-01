@@ -13,7 +13,13 @@ const repository = path.resolve(import.meta.dirname, '..')
 const password = 'node-repl-test-password'
 const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
 
-async function readServerUrl(server) {
+function withServerDiagnostics(message, diagnostics) {
+  return [message, diagnostics.stderr === '' ? '' : `Server stderr:\n${diagnostics.stderr}`]
+    .filter(Boolean)
+    .join('\n')
+}
+
+async function readServerUrl(server, diagnostics) {
   const lines = createInterface({ input: server.stdout })
   const abort = new AbortController()
   const timeout = setTimeout(() => abort.abort(), 10_000)
@@ -28,6 +34,9 @@ async function readServerUrl(server) {
       })
     ])
     return JSON.parse(line).url
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(withServerDiagnostics(message, diagnostics), { cause: error })
   } finally {
     clearTimeout(timeout)
     abort.abort()
@@ -35,7 +44,7 @@ async function readServerUrl(server) {
   }
 }
 
-async function api(base, requestPath, options = {}) {
+async function api(base, requestPath, diagnostics, options = {}) {
   const abort = new AbortController()
   const timeout = setTimeout(() => abort.abort(), 10_000)
   try {
@@ -45,7 +54,12 @@ async function api(base, requestPath, options = {}) {
       signal: abort.signal
     })
     if (!response.ok) {
-      throw new Error(`OpenCode API request failed (${response.status}): ${await response.text()}`)
+      throw new Error(
+        withServerDiagnostics(
+          `OpenCode API request failed (${response.status}): ${await response.text()}`,
+          diagnostics
+        )
+      )
     }
 
     return await response.json()
@@ -54,30 +68,45 @@ async function api(base, requestPath, options = {}) {
   }
 }
 
-async function waitForLocalPlugin(base, directory, deadline = Date.now() + 10_000) {
+function pluginTimeoutError(diagnostics, statuses, plugins) {
+  const failures = plugins.filter(({ state }) => state?.status === 'failed')
+  return new Error(
+    withServerDiagnostics(
+      [
+        'Timed out waiting for local.node_repl',
+        statuses.length > 0 ? `Poll results: ${statuses.slice(-10).join(', ')}` : '',
+        failures.length > 0 ? `Plugin failures: ${JSON.stringify(failures)}` : ''
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      diagnostics
+    )
+  )
+}
+
+function isActivePlugin(plugin) {
+  return plugin?.state?.status === 'active'
+}
+
+async function waitForLocalPlugin(base, directory, diagnostics, deadline = Date.now() + 10_000) {
   return new Promise((resolve, reject) => {
+    const statuses = []
+    let plugins = []
     const poll = async () => {
-      const abort = new AbortController()
-      const requestTimeout = setTimeout(() => abort.abort(), 2000)
-      try {
-        const endpoint = new URL('/api/plugin', base)
-        endpoint.searchParams.set('location[directory]', directory)
-        const response = await fetch(endpoint, { headers: { authorization }, signal: abort.signal })
-        if (response.ok) {
-          const body = await response.json()
-          const plugin = body.data.find(({ id }) => id === 'local.node_repl')
-          if (plugin) {
-            clearInterval(timer)
-            clearTimeout(timeout)
-            resolve(plugin)
-          }
-        }
-      } catch (error) {
+      const result = await pollLocalPlugin(base, directory)
+      if (result.plugins.length > 0) {
+        plugins = result.plugins
+      }
+
+      if (isActivePlugin(result.plugin)) {
         clearInterval(timer)
         clearTimeout(timeout)
-        reject(error)
-      } finally {
-        clearTimeout(requestTimeout)
+        resolve(result.plugin)
+        return
+      }
+
+      if (result.status) {
+        statuses.push(result.status)
       }
     }
 
@@ -85,12 +114,33 @@ async function waitForLocalPlugin(base, directory, deadline = Date.now() + 10_00
     const timeout = setTimeout(
       () => {
         clearInterval(timer)
-        reject(new Error('Timed out waiting for local.node_repl'))
+        reject(pluginTimeoutError(diagnostics, statuses, plugins))
       },
       Math.max(0, deadline - Date.now())
     )
     poll()
   })
+}
+
+async function pollLocalPlugin(base, directory) {
+  const abort = new AbortController()
+  const timeout = setTimeout(() => abort.abort(), 5000)
+  try {
+    const endpoint = new URL('/api/plugin', base)
+    endpoint.searchParams.set('location[directory]', directory)
+    const response = await fetch(endpoint, { headers: { authorization }, signal: abort.signal })
+    if (!response.ok) {
+      return { plugins: [], status: `HTTP ${response.status}` }
+    }
+
+    const body = await response.json()
+    const plugins = body.data
+    return { plugins, plugin: plugins.find(({ id }) => id === 'local.node_repl') }
+  } catch (error) {
+    return { plugins: [], status: error instanceof Error ? error.message : String(error) }
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 async function waitForClose(server, milliseconds) {
@@ -112,17 +162,17 @@ async function waitForClose(server, milliseconds) {
 }
 
 async function stopServer(server) {
-  if (server.exitCode !== null || server.signalCode !== null) {
-    return
-  }
-
   server.kill('SIGTERM')
   if (await waitForClose(server, 2000)) {
     return
   }
 
   server.kill('SIGKILL')
-  await waitForClose(server, 2000)
+  await waitForClose(server, 2000).then((closed) => {
+    if (!closed) {
+      throw new Error('OpenCode server did not exit after SIGKILL')
+    }
+  })
 }
 
 function startServer(project, root) {
@@ -130,33 +180,44 @@ function startServer(project, root) {
     Object.entries(process.env).filter(
       ([name]) =>
         !name.startsWith('OPENCODE_') &&
+        name !== 'NODE_OPTIONS' &&
         !['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TMPDIR', 'TMP', 'TEMP'].includes(name)
     )
   )
-  return spawn(process.env.OPENCODE_BIN ?? 'opencode2', ['serve', '--stdio', '--port', '0'], {
-    cwd: project,
-    env: {
-      ...inherited,
-      HOME: path.join(root, 'home'),
-      USERPROFILE: path.join(root, 'home'),
-      HOMEDRIVE: '',
-      HOMEPATH: path.join(root, 'home'),
-      OPENCODE_CONFIG_CONTENT: '{}',
-      OPENCODE_CONFIG_DIR: path.join(root, 'config'),
-      OPENCODE_DB: path.join(root, 'opencode.db'),
-      OPENCODE_TEST_HOME: root,
-      OPENCODE_DISABLE_MODELS_FETCH: 'true',
-      OPENCODE_PASSWORD: password,
-      TMPDIR: path.join(root, 'tmp'),
-      TMP: path.join(root, 'tmp'),
-      TEMP: path.join(root, 'tmp'),
-      XDG_CACHE_HOME: path.join(root, 'cache'),
-      XDG_CONFIG_HOME: path.join(root, 'xdg-config'),
-      XDG_DATA_HOME: path.join(root, 'data'),
-      XDG_STATE_HOME: path.join(root, 'state')
-    },
-    stdio: ['pipe', 'pipe', 'ignore']
+  const diagnostics = { stderr: '' }
+  const server = spawn(
+    process.env.OPENCODE_BIN ?? 'opencode2',
+    ['serve', '--stdio', '--port', '0'],
+    {
+      cwd: project,
+      env: {
+        ...inherited,
+        HOME: path.join(root, 'home'),
+        USERPROFILE: path.join(root, 'home'),
+        HOMEDRIVE: '',
+        HOMEPATH: path.join(root, 'home'),
+        OPENCODE_CONFIG_CONTENT: '{}',
+        OPENCODE_CONFIG_DIR: path.join(root, 'config'),
+        OPENCODE_DB: path.join(root, 'opencode.db'),
+        OPENCODE_TEST_HOME: root,
+        OPENCODE_DISABLE_MODELS_FETCH: 'true',
+        OPENCODE_PASSWORD: password,
+        TMPDIR: path.join(root, 'tmp'),
+        TMP: path.join(root, 'tmp'),
+        TEMP: path.join(root, 'tmp'),
+        XDG_CACHE_HOME: path.join(root, 'cache'),
+        XDG_CONFIG_HOME: path.join(root, 'xdg-config'),
+        XDG_DATA_HOME: path.join(root, 'data'),
+        XDG_STATE_HOME: path.join(root, 'state')
+      },
+      stdio: ['pipe', 'pipe', 'pipe']
+    }
+  )
+  server.stderr.setEncoding('utf8')
+  server.stderr.on('data', (chunk) => {
+    diagnostics.stderr = `${diagnostics.stderr}${chunk}`.slice(-16_384)
   })
+  return { server, diagnostics }
 }
 
 test('loads the local plugin in a standalone session from a temp project', async () => {
@@ -164,6 +225,12 @@ test('loads the local plugin in a standalone session from a temp project', async
   let server
 
   try {
+    const relative = path.relative(repository, root)
+    assert.ok(
+      relative.startsWith('..') || path.isAbsolute(relative),
+      'Temporary project must be outside the repository'
+    )
+
     const project = path.join(root, 'project')
     const pluginDirectory = path.join(repository, '.opencode')
     await mkdir(project, { recursive: true })
@@ -176,23 +243,26 @@ test('loads the local plugin in a standalone session from a temp project', async
       })}\n`
     )
 
-    server = startServer(project, root)
-    const base = await readServerUrl(server)
-    const session = await api(base, '/api/session', {
+    const started = startServer(project, root)
+    server = started.server
+    const base = await readServerUrl(server, started.diagnostics)
+    const session = await api(base, '/api/session', started.diagnostics, {
       method: 'POST',
       body: JSON.stringify({ location: { directory: project } })
     })
     assert.ok(session.data.id)
 
-    const plugin = await waitForLocalPlugin(base, project)
+    const plugin = await waitForLocalPlugin(base, project, started.diagnostics)
     assert.equal(plugin.state.status, 'active')
     assert.equal(plugin.source.type, 'local')
     assert.equal(plugin.source.path, path.join(pluginDirectory, 'index.ts'))
   } finally {
-    if (server) {
-      await stopServer(server)
+    try {
+      if (server) {
+        await stopServer(server)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
-
-    await rm(root, { recursive: true, force: true })
   }
 })
