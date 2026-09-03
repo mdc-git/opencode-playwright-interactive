@@ -1,5 +1,5 @@
 import type { Plugin } from '@opencode-ai/plugin/effect'
-import type { ToolDraft } from '@opencode-ai/plugin/effect/tool'
+import type { ToolEditor } from '@opencode-ai/plugin/effect/tool'
 import { Error as ToolError, type Tool } from '@opencode-ai/schema/tool'
 import { Effect } from 'effect'
 import {
@@ -95,7 +95,7 @@ const makeSetupExecutor =
     })
 
 export function registerTools(
-  tools: ToolDraft,
+  tools: ToolEditor,
   runtime: ReplRuntime,
   sessionGet: SessionGetter,
   options: RuntimeOptions

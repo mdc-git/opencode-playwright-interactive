@@ -62,10 +62,19 @@ async function api(base, requestPath, diagnostics, options = {}) {
       )
     }
 
-    return await response.json()
+    return response.status === 204 ? undefined : await response.json()
   } finally {
     clearTimeout(timeout)
   }
+}
+
+async function awaitActivation(base, directory, diagnostics) {
+  return api(
+    base,
+    `/api/plugin/await-activation?location%5Bdirectory%5D=${encodeURIComponent(directory)}`,
+    diagnostics,
+    { method: 'POST', body: '{}' }
+  )
 }
 
 function pluginTimeoutError(diagnostics, statuses, plugins) {
@@ -219,7 +228,6 @@ function startServer(project, root) {
   })
   return { server, diagnostics }
 }
-
 async function assertPluginRegistrations(base, directory, diagnostics) {
   return new Promise((resolve, reject) => {
     const poll = async () => {
@@ -254,11 +262,7 @@ async function assertPluginRegistrations(base, directory, diagnostics) {
 test('loads the local plugin in a standalone session from a temp project', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-playwright-interactive-'))
   let server
-
   try {
-    const relative = path.relative(repository, root)
-    assert.ok(relative.startsWith('..') || path.isAbsolute(relative))
-
     const project = path.join(root, 'project')
     const pluginDirectory = path.join(repository, '.opencode')
     await mkdir(project, { recursive: true })
@@ -270,7 +274,6 @@ test('loads the local plugin in a standalone session from a temp project', async
         plugins: [pluginDirectory]
       })}\n`
     )
-
     const started = startServer(project, root)
     server = started.server
     const base = await readServerUrl(server, started.diagnostics)
@@ -279,12 +282,11 @@ test('loads the local plugin in a standalone session from a temp project', async
       body: JSON.stringify({ location: { directory: project } })
     })
     assert.ok(session.data.id)
-
+    await awaitActivation(base, project, started.diagnostics)
     const plugin = await waitForLocalPlugin(base, project, started.diagnostics)
     assert.equal(plugin.state.status, 'active')
     assert.equal(plugin.source.type, 'local')
     assert.equal(plugin.source.path, path.join(pluginDirectory, 'index.ts'))
-
     await assertPluginRegistrations(base, project, started.diagnostics)
   } finally {
     try {

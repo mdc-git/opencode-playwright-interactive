@@ -115,17 +115,10 @@ other declared dependencies into an isolated cache, and loads the plugin. See
 [Verify](#verify) below to confirm it loaded.
 
 > [!NOTE]
-> V2 caches a git package under a key derived from the exact package string in
-> either `~/.cache/opencode/packages/git-<sha256>/` (legacy layout) or
-> `~/.cache/opencode/npm/git-opencode-playwright-interactive-<hash12>/<timestamp>/node_modules/opencode-playwright-interactive/`
-> (current loader). Inspect both layouts before concluding a purge succeeded.
-> The local development override below does not use that package cache. If a
-> deployed package reports an install error, inspect the service log and compare
-> the cached source against the checkout before removing anything.
->
-> The package loader refreshes mutable git references asynchronously when they
-> are loaded, so a plain restart can initially activate the old cached checkout.
-> Use `/deploy` for a deterministic refresh.
+> Use the native `opencode2 plugin check` and `opencode2 plugin update`
+> commands to refresh a deployed package. The local development override below
+> does not use the package cache. If a deployed package reports an install
+> error, inspect the service log and plugin state.
 
 ## Local development
 
@@ -140,7 +133,6 @@ directories with an `index.ts` or `index.js` entrypoint.
 Run the private server and TUI from the repository root:
 
 ```sh
-cd /Storage/Development/opencode-playwright-interactive
 npm install
 opencode2 --standalone
 ```
@@ -220,21 +212,14 @@ The global Git installation uses the package export, not the project-local
 
 1. Run the developer checks below.
 2. Commit and push the change.
-3. Run `/deploy` from this repository, or remove the exact cache entry and
-   restart the background service.
+3. Run `/deploy` from this repository. It runs the native targeted
+   `opencode2 plugin check` and `opencode2 plugin update` commands.
+4. Verify the target location with `POST /api/plugin/await-activation`, then
+   inspect `GET /api/plugin` for the active package revision.
 
-V2 keys the package by the exact package string in either
-`~/.cache/opencode/packages/git-<sha256>/` (legacy) or
-`~/.cache/opencode/npm/git-opencode-playwright-interactive-<hash12>/`
-(current loader). `/deploy` derives the key from the configured Git package
-string, removes only those matching entries, and restarts the service so V2
-fetches a fresh checkout. Do not use an unscoped `git-*` glob. When the
-deployed code looks stale, compare checksums (falling back to the legacy path
-when the `npm` layout is absent) and check the server log for install errors:
-
-```sh
-sha256sum plugins/node-repl/index.ts "${XDG_CACHE_HOME:-$HOME/.cache}/opencode/npm/git-opencode-playwright-interactive-<hash12>/<timestamp>/node_modules/opencode-playwright-interactive/plugins/node-repl/index.ts"
-```
+The native updater refreshes the package and notifies active locations to
+reload it. Do not delete package caches manually or use service status as a
+plugin-readiness check.
 
 ## Developer checks
 
