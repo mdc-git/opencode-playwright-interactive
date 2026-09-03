@@ -115,13 +115,17 @@ other declared dependencies into an isolated cache, and loads the plugin. See
 [Verify](#verify) below to confirm it loaded.
 
 > [!NOTE]
-> V2 stores a git package install under a cache key such as
-> `~/.cache/opencode/packages/git-<sha256>/`, not under a package-named
-> directory. The local development override below does not use that package
-> cache. If a deployed package reports an install error, inspect the service
-> log and the exact cache entry before removing anything.
+> V2 caches a git package under a key derived from the exact package string in
+> either `~/.cache/opencode/packages/git-<sha256>/` (legacy layout) or
+> `~/.cache/opencode/npm/git-opencode-playwright-interactive-<hash12>/<timestamp>/node_modules/opencode-playwright-interactive/`
+> (current loader). Inspect both layouts before concluding a purge succeeded.
+> The local development override below does not use that package cache. If a
+> deployed package reports an install error, inspect the service log and compare
+> the cached source against the checkout before removing anything.
 >
-> The package loader refreshes mutable git references when they are loaded.
+> The package loader refreshes mutable git references asynchronously when they
+> are loaded, so a plain restart can initially activate the old cached checkout.
+> Use `/deploy` for a deterministic refresh.
 
 ## Local development
 
@@ -150,8 +154,18 @@ This is a server-only plugin; it does not provide a separate TUI addon.
 
 When OpenCode is running from this repository, the plugin registry should show
 `local.node_repl` with a local source. Local development does not depend on the
-deployed git package cache. Restart the relevant OpenCode service or standalone
-session after source changes when the imported module cache has not reloaded.
+deployed git package cache. After source changes, evict the checkout location
+instead of restarting or signaling processes:
+
+```sh
+opencode2 api --server <url> delete "/api/debug/location?location[directory]=<absolute-checkout>"
+```
+
+Plain `opencode2 api` addresses the managed background service; a standalone
+session needs `--server <url>` for its child server (discovered via `ps`/`ss`).
+Never signal the `opencode2 --standalone` TUI PID to reload, and do not use
+`opencode2 api --standalone` to contact a running session — it starts a new
+private server.
 
 ## Commands and tools
 
@@ -170,16 +184,24 @@ The skill can also be activated directly without the command.
 
 ## Verify
 
-Restart the V2 service:
+Restart the V2 service only with explicit permission:
 
 ```sh
 opencode2 service restart
 ```
 
-From a project where the plugin should be active, check the loaded plugins:
+From a project where the plugin should be active, check the loaded plugins on
+the server that owns the location:
 
 ```sh
 opencode2 api get "/api/plugin?location[directory]=$(pwd)"
+```
+
+For a standalone session, target its child server explicitly (discovered via
+`ps`/`ss`):
+
+```sh
+opencode2 api --server <url> get "/api/plugin?location[directory]=<absolute-project>"
 ```
 
 For a deployed package, the response should contain `github.node_repl`. When
@@ -201,11 +223,18 @@ The global Git installation uses the package export, not the project-local
 3. Run `/deploy` from this repository, or remove the exact cache entry and
    restart the background service.
 
-V2 stores the package in a cache entry named
-`~/.cache/opencode/packages/git-<sha256>/`. `/deploy` derives the exact key from
-the configured Git package string, removes that entry, and restarts the service
-so V2 fetches a fresh checkout. Do not remove a package-named cache path or use
-a broad cache glob.
+V2 keys the package by the exact package string in either
+`~/.cache/opencode/packages/git-<sha256>/` (legacy) or
+`~/.cache/opencode/npm/git-opencode-playwright-interactive-<hash12>/`
+(current loader). `/deploy` derives the key from the configured Git package
+string, removes only those matching entries, and restarts the service so V2
+fetches a fresh checkout. Do not use an unscoped `git-*` glob. When the
+deployed code looks stale, compare checksums (falling back to the legacy path
+when the `npm` layout is absent) and check the server log for install errors:
+
+```sh
+sha256sum plugins/node-repl/index.ts "${XDG_CACHE_HOME:-$HOME/.cache}/opencode/npm/git-opencode-playwright-interactive-<hash12>/<timestamp>/node_modules/opencode-playwright-interactive/plugins/node-repl/index.ts"
+```
 
 ## Developer checks
 
