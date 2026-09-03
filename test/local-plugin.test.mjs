@@ -12,7 +12,6 @@ import { test } from 'node:test'
 const repository = path.resolve(import.meta.dirname, '..')
 const password = 'node-repl-test-password'
 const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
-
 function withServerDiagnostics(message, diagnostics) {
   return [message, diagnostics.stderr === '' ? '' : `Server stderr:\n${diagnostics.stderr}`]
     .filter(Boolean)
@@ -228,6 +227,7 @@ function startServer(project, root) {
   })
   return { server, diagnostics }
 }
+
 async function assertPluginRegistrations(base, directory, diagnostics) {
   return new Promise((resolve, reject) => {
     const poll = async () => {

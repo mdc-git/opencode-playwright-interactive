@@ -13,7 +13,7 @@ export default defineConfig([
   }),
 
   {
-    ignores: ['node_modules/**', '.opencode/**']
+    ignores: ['node_modules/**', '.opencode/**', 'package-lock.json']
   },
 
   {
